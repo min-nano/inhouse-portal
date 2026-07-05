@@ -63,20 +63,24 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    npx wrangler pages project create inhouse-portal --production-branch main
    ```
 
-2. **ビルドが使う API トークンを Pages 権限のものに切り替える**:
-   旧 Workers ビルドがデフォルトで使うトークンは **Workers 用スコープ**で
-   Pages の権限が無いため、`wrangler pages deploy` は
-   `Authentication error [code: 10000]` で失敗する
+2. **Pages 権限付きの API トークンをビルドに渡す**:
+   旧 Workers ビルドが使うトークンは **Workers 用スコープ**で Pages の権限が無いため、
+   `wrangler pages deploy` は `Authentication error [code: 10000]` で失敗する
    (アカウントの Super Administrator 権限とは別物。トークン側のスコープの問題)。
-   ビルド設定の **API token** 欄で、Pages 編集権限を持つトークンを選ぶ。
-   - Settings → **API token** → 鉛筆アイコン → ドロップダウンで
-     **Cloudflare Pages: Edit 権限のトークンを選択** → **Update**
-   - 適切なトークンが無ければ、同ドロップダウンの **Create new token** から作成する。
-     必要な権限は **Account → Cloudflare Pages → Edit**
-     (＋ Account Settings: Read / User Memberships: Read があると確実)。
+   ビルド設定の **API token** セレクタの `Create new token` で作られるのは
+   権限固定の Workers 用ビルドトークン (API Tokens 画面に出ず編集不可) なので、
+   代わりに **My Profile で正規の Custom token を作り、環境変数で上書き**する。
+   1. My Profile → API Tokens → **Create Token** → Custom token
+      - Permissions: **Account → Cloudflare Pages → Edit**
+      - 併せて **Account → Account Settings → Read** / **User → Memberships → Read** も付けておく
+      - Account Resources: 対象アカウントを Include
+   2. ビルドプロジェクトの Settings → Variables and Secrets に登録:
+      - `CLOUDFLARE_API_TOKEN` = 上で作ったトークン (**Secret**。ビルドトークンより優先される)
+      - `CLOUDFLARE_ACCOUNT_ID` = 対象アカウントのID (制限トークンだと自動検出に失敗するため明示)
 
-   > このトークンセレクタが `CLOUDFLARE_API_TOKEN` を注入するので、
-   > Variables and secrets 側に別途トークンを入れる必要はない (None のままでよい)。
+   > 上書きが効かない (ビルドトークン側が優先される) 場合は、ダッシュボードのビルドに
+   > 依存しない **GitHub Actions からのデプロイ**に切り替えるのが確実
+   > (同じ Custom token を GitHub Secrets に入れて `wrangler pages deploy` を実行)。
 
 3. **既存のGit連携ビルドを Pages デプロイに切り替え**:
    すでにこのリポジトリを Git 連携している (旧 Workers) ビルドプロジェクトの
