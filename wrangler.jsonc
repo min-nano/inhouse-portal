@@ -1,6 +1,6 @@
 {
   // Cloudflare Workers 設定 (静的アセット + APIプロキシの統合構成)
-  "name": "inhouse-portal",
+  "name": "min-nano-private",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-06-01",
   "assets": {
