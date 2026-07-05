@@ -59,7 +59,9 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 
 ### GASプロキシの登録 (任意)
 
-データAPIとして使うGASエンドポイントは、リポジトリに書かずに secret へ:
+リンクとして開くだけのGASアプリには不要 (カードから `/exec` へ直行し、
+GAS側のアカウント制限が効く)。ポータル画面自身がGASのデータを読む場合
+(Phase 2のレジストリAPI等) のみ、エンドポイントをリポジトリに書かずに secret へ:
 
 ```bash
 npx wrangler secret put PROXY_TARGETS

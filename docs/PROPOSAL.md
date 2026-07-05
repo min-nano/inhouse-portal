@@ -36,9 +36,22 @@
 
 ### GASプロキシ (/api/proxy/:id)
 
-- GASの生URL(`/exec`)はリポジトリにもブラウザにも置かず、
-  Worker の secret `PROXY_TARGETS` にのみ保持する
+**リンクとして開くだけのGASアプリにはプロキシは使わない。**
+カードのリンクはGASの `/exec` へ直行し、GAS側のGoogleアカウント制限が
+そのまま効く(対話的なGAS Webアプリはプロキシ経由では正常に動作しない)。
+
+プロキシが必要になるのは**ポータル画面自身がGASからデータを取得する**場合
+(Phase 2のレジストリAPI、将来のお知らせ・ウィジェット表示など):
+
+- GASを「Googleアカウント制限付き」でデプロイすると、別サイトからの
+  `fetch` にはJSONではなくログイン画面HTMLが返り、失敗する。
+  そのためデータAPI用途のGASは「全員(匿名)」でデプロイするしかなく、
+  **URLの秘匿が実質のアクセス制御**になる
+- そこで生URL(`/exec`)はリポジトリにもブラウザにも置かず、
+  Worker の secret `PROXY_TARGETS` にのみ保持する。
+  「Cloudflare Accessを通った人だけが秘匿URLのGAS APIを叩ける」構図
 - Worker→GAS はサーバー間通信のため CORS の制約を受けない
+  (匿名GASでもPOST+JSONはプリフライトで失敗するため中継が確実)
 - GASの302リダイレクト(script.googleusercontent.com)には自動追従
 - `Set-Cookie` 等の不要ヘッダは伝播させない
 
