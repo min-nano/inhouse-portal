@@ -49,27 +49,35 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 
 ## デプロイ
 
-### 初回セットアップ (Cloudflareダッシュボード)
+### 初回セットアップ
 
-1. **Pages でGitHub連携**: Workers & Pages → Create → **Pages** →
-   「Connect to Git」でこのリポジトリを選択。
+> ℹ️ **Cloudflareは2025年にダッシュボードからの Pages 新規作成導線を廃止**し、
+> 新規プロジェクトを Workers に一本化した。そのため「Create → Pages」ボタンは
+> 表示されないが、**Pages プロジェクトは Wrangler CLI から作成でき**、以後は
+> ダッシュボードの Workers & Pages 一覧に表示されてカスタムドメイン等も設定できる。
+
+1. **Pages プロジェクトを作成 (初回1回だけ・CLI)**:
+
+   ```bash
+   npx wrangler login                      # 未ログインなら
+   npx wrangler pages project create inhouse-portal --production-branch main
+   ```
+
+2. **既存のGit連携ビルドを Pages デプロイに切り替え**:
+   すでにこのリポジトリを Git 連携している (旧 Workers) ビルドプロジェクトの
+   設定を開き、**Deploy command を変更**する。
    - Build command: `npm run build`
-   - Build output directory: `dist/client`
-   - **Deploy command は設定しない**。Pages は出力ディレクトリと `functions/` を
-     自動で公開するため、`wrangler deploy` のようなデプロイコマンドは不要 (書くと失敗する)。
-   - 以後 main への push で自動デプロイされる (プレビューデプロイも自動生成)
+   - Deploy command: `npx wrangler deploy` → **`npx wrangler pages deploy`** に変更
+     (`wrangler.jsonc` の `name` と `pages_build_output_dir` を読むため引数は不要。
+      うまくいかない場合は `npx wrangler pages deploy dist/client --project-name inhouse-portal`)
+   - 以後 main への push で自動デプロイされる
 
-   > ⚠️ **旧 Workers プロジェクトからの移行時の注意**: 以前 Workers として
-   > 「Import a repository」で作ったプロジェクト (Deploy command が
-   > `npx wrangler deploy`) はそのままでは使えない。`wrangler.jsonc` が Pages 設定に
-   > なった状態で `npx wrangler deploy` が走ると
+   > ⚠️ Deploy command が `npx wrangler deploy` (Workers用) のままだと
    > `Missing entry-point to Worker script or to assets directory` で失敗する。
-   > 上記の **Pages プロジェクトとして作り直す** か、どうしても既存プロジェクトを
-   > 使うなら Deploy command を `npx wrangler pages deploy` に変更し、初回だけ
-   > `npx wrangler pages project create inhouse-portal --production-branch main`
-   > で Pages プロジェクトを作成しておくこと。
+   > 必ず `wrangler pages deploy` に変更すること。手元から一発で出すなら
+   > `npm run deploy` (= `vite build` → `wrangler pages deploy`) でもよい。
 
-2. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
+3. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
    Add an application (Self-hosted) で PagesのURL (下記カスタムドメイン) を指定し、
    ポリシーを作成。
    - 例: メールドメイン `@example.co.jp` を許可 + 協力者の個別メールを許可

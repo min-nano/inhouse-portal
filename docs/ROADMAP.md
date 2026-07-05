@@ -11,8 +11,10 @@
 
 ## Phase 1.5: 公開作業 (Cloudflareダッシュボードでの手動設定)
 
-- [ ] Cloudflare Pages でこのリポジトリを接続し自動デプロイを有効化
-      (ビルドコマンド: `npm run build` / 出力ディレクトリ: `dist/client`)
+- [ ] Pages プロジェクトを作成 (ダッシュボードにPages作成導線が無いためCLIで):
+      `npx wrangler pages project create inhouse-portal --production-branch main`
+- [ ] 既存のGit連携ビルドの Deploy command を `npx wrangler pages deploy` に変更し
+      自動デプロイを有効化 (Build command: `npm run build`)
 - [ ] カスタムドメインを割り当て: Pages → Custom domains で `portal.example.co.jp`
       を登録し、他社DNSに `CNAME → <project>.pages.dev` を張る
       (ネームサーバをCloudflareに移さず外部サブドメインを使える)
