@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "web", "test"]
+  "include": ["src", "web", "test", "functions"]
 }

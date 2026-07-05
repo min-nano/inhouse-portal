@@ -7,9 +7,9 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    // vite単体でUI開発するとき、APIは wrangler dev (8787) に中継する
+    // vite単体でUI開発するとき、APIは wrangler pages dev (8788) に中継する
     proxy: {
-      "/api": "http://localhost:8787",
+      "/api": "http://localhost:8788",
     },
   },
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseProxyTargets, proxyRequest } from "../src/worker/proxy";
+import { parseProxyTargets, proxyRequest } from "../src/server/proxy";
 
 const TARGETS = {
   "kintai-api": "https://script.google.com/macros/s/SECRET/exec",
