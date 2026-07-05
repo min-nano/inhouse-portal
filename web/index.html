@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>社内ポータル</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/main.ts"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <h1>社内ポータル</h1>
+      <p class="subtitle">設計ツール・GASアプリ リンク集</p>
+    </header>
+
+    <main>
+      <div class="toolbar">
+        <input
+          id="search"
+          type="search"
+          placeholder="ツール名・説明・タグで検索"
+          autocomplete="off"
+        />
+        <nav id="categories" class="categories" aria-label="カテゴリ"></nav>
+      </div>
+
+      <p id="status" class="status" hidden></p>
+      <section id="apps" class="app-grid" aria-live="polite"></section>
+    </main>
+
+    <footer class="site-footer">
+      <p>アプリの追加・修正はリポジトリの <code>data/apps.json</code> を編集してください。</p>
+    </footer>
+  </body>
+</html>

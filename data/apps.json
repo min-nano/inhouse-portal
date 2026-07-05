@@ -1,0 +1,28 @@
+{
+  "apps": [
+    {
+      "id": "sample-daily-report",
+      "name": "日報入力フォーム (サンプル)",
+      "description": "GASで作成した日報入力用Webアプリのサンプルエントリです。実際のURLに置き換えてください。",
+      "category": "業務管理",
+      "tags": ["gas", "サンプル"],
+      "url": "https://script.google.com/macros/s/SAMPLE_DEPLOYMENT_ID_1/exec"
+    },
+    {
+      "id": "sample-drawing-list",
+      "name": "図面リスト管理 (サンプル)",
+      "description": "案件ごとの図面リストを管理するGASアプリのサンプルエントリです。",
+      "category": "設計ツール",
+      "tags": ["gas", "図面", "サンプル"],
+      "url": "https://script.google.com/macros/s/SAMPLE_DEPLOYMENT_ID_2/exec"
+    },
+    {
+      "id": "sample-shared-drive",
+      "name": "共有ドライブ",
+      "description": "事務所の共有Googleドライブへのリンクです。",
+      "category": "共有リソース",
+      "tags": ["drive"],
+      "url": "https://drive.google.com/drive/folders/SAMPLE_FOLDER_ID"
+    }
+  ]
+}

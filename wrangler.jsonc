@@ -1,0 +1,16 @@
+{
+  // Cloudflare Workers 設定 (静的アセット + APIプロキシの統合構成)
+  "name": "inhouse-portal",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-06-01",
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  }
+  // GASエンドポイントの実URLは wrangler secret put PROXY_TARGETS で登録する。
+  // 例: {"kintai-api":"https://script.google.com/macros/s/XXXX/exec"}
+}
