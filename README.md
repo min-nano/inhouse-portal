@@ -63,7 +63,21 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    npx wrangler pages project create inhouse-portal --production-branch main
    ```
 
-2. **既存のGit連携ビルドを Pages デプロイに切り替え**:
+2. **Pages 権限付きの API トークンをビルドに渡す**:
+   旧 Workers ビルドが自動で使うデフォルトトークンは **Workers 用スコープ**で
+   Pages の権限が無いため、`wrangler pages deploy` は
+   `Authentication error [code: 10000]` で失敗する
+   (アカウントの Super Administrator 権限とは別物なので注意)。
+   Pages 編集権限のトークンを作ってビルドの環境変数で上書きする。
+   1. My Profile → API Tokens → **Create Token** → Custom token
+      - Permissions: **Account → Cloudflare Pages → Edit**
+      - 併せて **Account → Account Settings → Read** / **User → Memberships → Read** も付けておく
+      - Account Resources: 対象アカウントを Include
+   2. ビルドプロジェクトの Settings → Variables and Secrets に登録:
+      - `CLOUDFLARE_API_TOKEN` = 上で作ったトークン (**Secret**。デフォルトトークンを上書き)
+      - `CLOUDFLARE_ACCOUNT_ID` = 対象アカウントのID (制限トークンだと自動検出に失敗するため明示)
+
+3. **既存のGit連携ビルドを Pages デプロイに切り替え**:
    すでにこのリポジトリを Git 連携している (旧 Workers) ビルドプロジェクトの
    設定を開き、**Deploy command を変更**する。
    - Build command: `npm run build`
@@ -77,7 +91,7 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    > 必ず `wrangler pages deploy` に変更すること。手元から一発で出すなら
    > `npm run deploy` (= `vite build` → `wrangler pages deploy`) でもよい。
 
-3. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
+4. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
    Add an application (Self-hosted) で PagesのURL (下記カスタムドメイン) を指定し、
    ポリシーを作成。
    - 例: メールドメイン `@example.co.jp` を許可 + 協力者の個別メールを許可
