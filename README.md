@@ -51,12 +51,24 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 
 ### 初回セットアップ (Cloudflareダッシュボード)
 
-1. **Pages でGitHub連携**: Workers & Pages → Create → Pages →
+1. **Pages でGitHub連携**: Workers & Pages → Create → **Pages** →
    「Connect to Git」でこのリポジトリを選択。
    - Build command: `npm run build`
    - Build output directory: `dist/client`
-   - `functions/` ディレクトリは Pages が自動でバンドルする (追加設定不要)
+   - **Deploy command は設定しない**。Pages は出力ディレクトリと `functions/` を
+     自動で公開するため、`wrangler deploy` のようなデプロイコマンドは不要 (書くと失敗する)。
    - 以後 main への push で自動デプロイされる (プレビューデプロイも自動生成)
+
+   > ⚠️ **旧 Workers プロジェクトからの移行時の注意**: 以前 Workers として
+   > 「Import a repository」で作ったプロジェクト (Deploy command が
+   > `npx wrangler deploy`) はそのままでは使えない。`wrangler.jsonc` が Pages 設定に
+   > なった状態で `npx wrangler deploy` が走ると
+   > `Missing entry-point to Worker script or to assets directory` で失敗する。
+   > 上記の **Pages プロジェクトとして作り直す** か、どうしても既存プロジェクトを
+   > 使うなら Deploy command を `npx wrangler pages deploy` に変更し、初回だけ
+   > `npx wrangler pages project create inhouse-portal --production-branch main`
+   > で Pages プロジェクトを作成しておくこと。
+
 2. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
    Add an application (Self-hosted) で PagesのURL (下記カスタムドメイン) を指定し、
    ポリシーを作成。
