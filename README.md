@@ -56,12 +56,21 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 > 表示されないが、**Pages プロジェクトは Wrangler CLI から作成でき**、以後は
 > ダッシュボードの Workers & Pages 一覧に表示されてカスタムドメイン等も設定できる。
 
-1. **Pages プロジェクトを作成 (初回1回だけ・CLI)**:
+1. **Pages プロジェクトを作成 (初回1回だけ)**:
+   `wrangler pages deploy` は既存プロジェクトにしかデプロイできず
+   (無いと `The Pages project "inhouse-portal" does not exist.`)、
+   自動作成しないので、先に一度だけ作成する。
 
    ```bash
    npx wrangler login                      # 未ログインなら
    npx wrangler pages project create inhouse-portal --production-branch main
    ```
+
+   > 手元にターミナルが無い場合は、ビルドの Deploy command を一時的に
+   > `npx wrangler pages project create inhouse-portal --production-branch main; npx wrangler pages deploy`
+   > にすれば、ビルド環境から作成＋デプロイできる (トークンに Pages:Edit がある前提。
+   > 2回目以降は作成が「既に存在」で失敗するが `;` で無視されデプロイに進む)。
+   > 初回成功後は Deploy command を `npx wrangler pages deploy` に戻してよい。
 
 2. **Pages 権限付きの API トークンをビルドに渡す**:
    旧 Workers ビルドが使うトークンは **Workers 用スコープ**で Pages の権限が無いため、
