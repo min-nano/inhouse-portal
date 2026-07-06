@@ -1,25 +1,37 @@
 # inhouse-portal
 
 事務所内+委託協力者向けのポータルサイト。設計ツール等(主にGAS Webアプリ)への
-リンクを1か所にまとめ、Cloudflare Pages + Functions でホスティングし
-Cloudflare Access でアクセス制限をかける。
+リンクを1か所にまとめ、Cloudflare Pages + Functions でホスティングし、
+**Google ログイン(内製認証)** でアクセス制限をかける。
 
 - 制作方針: [docs/PROPOSAL.md](docs/PROPOSAL.md)
 - ロードマップ: [docs/ROADMAP.md](docs/ROADMAP.md)
+- 認証 (Google OAuth) 設計・設定: [docs/auth-internal.md](docs/auth-internal.md)
 - Phase 2 (GAS自動列挙) 設計: [docs/phase2-gas-registry.md](docs/phase2-gas-registry.md)
 
 ## アーキテクチャ
 
 ```
-ユーザー → [Cloudflare Access] → [Cloudflare Pages]
-                                   ├─ 静的アセット (ポータル画面) … Pagesが直接配信
-                                   └─ Pages Functions (/api/*)
-                                        ├─ GET /api/apps       … 台帳 (data/apps.json)
-                                        └─ ALL /api/proxy/:id  … GASへの中継 (CORS回避・URL秘匿)
+ユーザー → [Cloudflare Pages + Functions]
+             └─ functions/_middleware.ts … 全リクエストの認証ゲート (Google OAuth)
+                  ├─ 認証済み → 静的アセット (ポータル画面) … Pagesが配信
+                  └─ /api/*
+                       ├─ GET  /api/auth/login|callback|logout … ログイン導線
+                       ├─ GET  /api/me         … ログイン中ユーザー
+                       ├─ GET  /api/apps       … 台帳 (data/apps.json)
+                       └─ ALL  /api/proxy/:id  … GASへの中継 (CORS回避・URL秘匿)
 ```
 
-`/api/*` は `functions/api/[[route]].ts` (Hono) が処理し、それ以外の画面・CSS・JS
-などの静的アセットは Pages が `dist/client` から直接配信する。
+認証ゲート `functions/_middleware.ts` が **静的な画面ファイルを含む全リクエスト** に
+割り込み、自前セッション(HMAC署名Cookie)を検証する。`/api/*` は
+`functions/api/[[route]].ts` (Hono) が処理し、認証を通過した静的アセットは Pages が
+`dist/client` から直接配信する。
+
+> 💡 **なぜ Cloudflare Access ではなく内製認証か**: Access は Cloudflare
+> アカウント内のホスト名しか保護できず、外部DNSに CNAME で割り当てた
+> カスタムドメインは対象にできない(有料の Partial CNAME setup が必要)。
+> ネームサーバ移管を避ける本構成と両立させるため認証をアプリ層で実装した。
+> 詳細と設定手順は [docs/auth-internal.md](docs/auth-internal.md)。
 
 ## アプリの追加・修正
 
@@ -105,11 +117,25 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    > 必ず `wrangler pages deploy` に変更すること。手元から一発で出すなら
    > `npm run deploy` (= `vite build` → `wrangler pages deploy`) でもよい。
 
-4. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
-   Add an application (Self-hosted) で PagesのURL (下記カスタムドメイン) を指定し、
-   ポリシーを作成。
-   - 例: メールドメイン `@example.co.jp` を許可 + 協力者の個別メールを許可
-   - Identity Provider に Google を設定するとGoogleログインになる
+4. **内製認証 (Google OAuth) を設定**: Google Cloud で OAuth クライアントを作り、
+   Pages に secret / 環境変数を登録する。詳細手順は
+   [docs/auth-internal.md](docs/auth-internal.md) を参照。要点だけ:
+   - Google Cloud → OAuth クライアント ID (ウェブ) を作成し、承認済みリダイレクト
+     URI に `https://<カスタムドメイン>/api/auth/callback` を登録
+   - 必須 secret: `AUTH_SECRET`(ランダム長文字列)/ `GOOGLE_CLIENT_ID` /
+     `GOOGLE_CLIENT_SECRET`
+     ```bash
+     openssl rand -base64 48 | npx wrangler pages secret put AUTH_SECRET
+     npx wrangler pages secret put GOOGLE_CLIENT_ID
+     npx wrangler pages secret put GOOGLE_CLIENT_SECRET
+     ```
+   - 許可リスト: `ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS`(`*` ワイルドカード可)を
+     環境変数で設定。頻繁に出入りするなら KV `AUTH_KV` の `allowlist` キーに置くと
+     デプロイ不要で編集できる(無料枠で収まる)
+   - 例: `ALLOWED_EMAIL_DOMAINS=*@example.co.jp` + 協力者の個別メールを `ALLOWED_EMAILS`
+
+   > ⚠️ `AUTH_SECRET` 未設定のままだと認証ゲートは fail-closed で全体を 503 にする
+   > (設定漏れで丸ごと公開される事故を防ぐため)。デプロイ前に必ず登録すること。
 
 ### カスタムドメイン (外部サブドメインをCNAMEで割り当てる)
 

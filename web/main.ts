@@ -16,6 +16,8 @@ const $search = document.getElementById("search") as HTMLInputElement;
 const $categories = document.getElementById("categories")!;
 const $apps = document.getElementById("apps")!;
 const $status = document.getElementById("status")!;
+const $user = document.getElementById("user")!;
+const $userEmail = document.getElementById("user-email")!;
 
 function showStatus(message: string) {
   $status.textContent = message;
@@ -88,10 +90,30 @@ function renderApps() {
   );
 }
 
+async function loadUser() {
+  try {
+    const res = await fetch("/api/me");
+    if (!res.ok) return;
+    const me = (await res.json()) as { authenticated: boolean; email?: string };
+    if (me.authenticated && me.email) {
+      $userEmail.textContent = me.email;
+      $user.hidden = false;
+    }
+  } catch {
+    // ヘッダのユーザー表示は必須ではないので、失敗しても無視
+  }
+}
+
 async function init() {
   showStatus("読み込み中…");
+  loadUser();
   try {
     const res = await fetch("/api/apps");
+    if (res.status === 401) {
+      // セッション切れ: ログインへ誘導
+      location.href = "/api/auth/login";
+      return;
+    }
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
