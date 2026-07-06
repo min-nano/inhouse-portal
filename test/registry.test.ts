@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import rawApps from "../data/apps.json";
-import { listCategories, loadRegistry } from "../src/worker/registry";
+import { listCategories, loadRegistry } from "../src/server/registry";
 
 const validApp = {
   id: "sample",

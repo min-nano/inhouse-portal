@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createApp, type Env } from "../src/worker/app";
-import { loadRegistry } from "../src/worker/registry";
+import { createApp, type Env } from "../src/server/app";
+import { loadRegistry } from "../src/server/registry";
 
 const registry = loadRegistry({
   apps: [
@@ -25,9 +25,6 @@ const registry = loadRegistry({
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
-    ASSETS: {
-      fetch: async () => new Response("static-asset", { status: 200 }),
-    },
     ...overrides,
   };
 }
@@ -60,14 +57,6 @@ describe("未定義のAPIパス", () => {
     const res = await app.request("/api/nope", {}, makeEnv());
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("application/json");
-  });
-});
-
-describe("API以外のパス", () => {
-  it("静的アセットに委譲する", async () => {
-    const res = await app.request("/some/page", {}, makeEnv());
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe("static-asset");
   });
 });
 

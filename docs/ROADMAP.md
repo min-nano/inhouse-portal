@@ -7,17 +7,21 @@
 - [x] `/api/apps` 台帳API
 - [x] `/api/proxy/:id` GASプロキシ (生URL秘匿・CORS回避。Phase 2の土台)
 - [x] テストコード (台帳検証 / APIルート / プロキシ / 検索ロジック)
-- [x] GitHub Actions CI (typecheck + test + build + wranglerドライラン)
+- [x] GitHub Actions CI (typecheck + test + build + Functionsバンドル検証)
 
 ## Phase 1.5: 公開作業 (Cloudflareダッシュボードでの手動設定)
 
-- [ ] Cloudflare Workers Builds でこのリポジトリを接続し自動デプロイを有効化
-      (ビルドコマンド: `npm run build` / デプロイコマンド: `npx wrangler deploy`)
-- [ ] Zero Trust → Access でアプリケーションを作成し、`*.workers.dev`
-      (またはカスタムドメイン) にポリシーを設定
+- [ ] Pages プロジェクトを作成 (ダッシュボードにPages作成導線が無いためCLIで):
+      `npx wrangler pages project create inhouse-portal --production-branch main`
+- [ ] 既存のGit連携ビルドの Deploy command を `npx wrangler pages deploy` に変更し
+      自動デプロイを有効化 (Build command: `npm run build`)
+- [ ] カスタムドメインを割り当て: Pages → Custom domains で `portal.example.co.jp`
+      を登録し、他社DNSに `CNAME → <project>.pages.dev` を張る
+      (ネームサーバをCloudflareに移さず外部サブドメインを使える)
+- [ ] Zero Trust → Access でアプリケーションを作成し、カスタムドメイン
+      (または `*.pages.dev`) にポリシーを設定
       - 事務所メンバー: メールドメイン一致 or Googleグループ
       - 委託協力者: 個別メールアドレスを許可リストに追加
-- [ ] `workers.dev` サブドメインの直アクセスを塞ぐ場合はカスタムドメイン運用を検討
 - [ ] 実際のGASアプリを `data/apps.json` に登録
 
 ## Phase 2: GASレジストリAPI — デプロイ済みGASの自動取得
@@ -26,7 +30,7 @@
 
 - [ ] GAS側: Drive API + Apps Script API で自分のGASプロジェクトと
       WebアプリデプロイURLを列挙して返すレジストリWebアプリを作成
-- [ ] Worker側: `PROXY_TARGETS` にレジストリを登録し、`/api/registry` として
+- [ ] Functions側: `PROXY_TARGETS` にレジストリを登録し、`/api/registry` として
       プロキシ+キャッシュ(Cache API, 数分)
 - [ ] ポータル画面: 手動台帳(apps.json)と自動取得分をマージ表示
       (自動取得分には「自動」バッジ)
@@ -34,7 +38,7 @@
 
 ## Phase 3: グループウェア機能の拡張 (必要になったものから)
 
-- [ ] お知らせ・掲示板 (Workers KV or D1)
+- [ ] お知らせ・掲示板 (Cloudflare KV or D1)
 - [ ] Cloudflare Access のJWTからユーザー情報を取得し、所属に応じた表示切替
       (協力者には社内専用ツールを非表示 等)
 - [ ] お気に入り・並び替えのパーソナライズ

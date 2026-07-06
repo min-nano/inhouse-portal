@@ -3,15 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "事務所内+委託協力者向けポータル (GASツールリンク集 / Cloudflare Workers)",
+  "description": "事務所内+委託協力者向けポータル (GASツールリンク集 / Cloudflare Pages + Functions)",
   "scripts": {
-    "dev": "npm run build && wrangler dev",
+    "dev": "npm run build && wrangler pages dev",
     "dev:web": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler pages deploy"
   },
   "dependencies": {
     "hono": "^4.6.0",

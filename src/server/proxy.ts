@@ -1,7 +1,7 @@
 /**
  * GASエンドポイントへの中継プロキシ。
  *
- * - GASの生URL (/exec) はブラウザに出さず、Worker の secret (PROXY_TARGETS) にのみ保持する
+ * - GASの生URL (/exec) はブラウザに出さず、Pagesの環境変数 (PROXY_TARGETS) にのみ保持する
  * - サーバー間通信になるため CORS の制約を受けない
  * - GAS はレスポンス時に script.googleusercontent.com へ302リダイレクトするため
  *   redirect: "follow" で追従する
