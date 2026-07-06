@@ -92,6 +92,7 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET
 | `GOOGLE_HOSTED_DOMAIN` | 任意 | 変数 | 同意画面の `hd` ヒント(UX用)。例 `example.co.jp` |
 | `APP_BASE_URL` | 任意 | 変数 | redirect_uri の基点を明示上書き。通常はリクエストから自動導出 |
 | `SESSION_TTL_HOURS` | 任意 | 変数 | セッション有効時間。既定 `168`(7日) |
+| `AUTH_MODE` | 任意 | 変数 | `access` にすると **pages.dev 上で** Function 認証をスルー(Cloudflare Access に委譲)。**Preview 環境にのみ**設定する。詳細は下記 |
 
 > `ALLOWED_EMAIL_DOMAINS` と `ALLOWED_EMAILS` は分けているが役割は同じ(単に
 > 見通しのため)。どちらにワイルドカードや個別アドレスを書いてもよい。
@@ -167,32 +168,54 @@ ALLOWED_EMAIL_DOMAINS=*@example.co.jp
 `wrangler pages dev` は `functions/_middleware.ts` もルートも本番と同一のものを
 動かし、実際の Google ログインを通せる。**動作確認の第一手段はこのローカル実行**。
 
-## プレビュー(PR)デプロイでの認証
+## 環境ごとの保護方針(本番=OAuth / プレビュー=Cloudflare Access)
 
-Google OAuth の `redirect_uri` は **完全一致で事前登録が必須**(ワイルドカード不可)
-なので、**デプロイごとに変わるハッシュ付きプレビューURL**
-(`https://<コミットhash>.<project>.pages.dev`)では OAuth を通せない
-(`redirect_uri_mismatch` になる)。プレビューで検証したい場合は、ハッシュURLではなく
-**ブランチ単位の固定エイリアス**を使う:
+保護は環境で使い分ける。理由は「Cloudflare Access が無料で効くのは Cloudflare 所有
+ゾーン(`*.pages.dev`)だけ」で、本番のカスタムドメイン(外部DNS)は Access の対象に
+できないため。**Access が効く所は Access、効かない所は OAuth** と割り当てる。
 
-1. Pages はデプロイのhash URLとは別に、ブランチごとに決定的なエイリアス
-   `https://<正規化ブランチ名>.<project>.pages.dev` を払い出す
-   (正確なホストは Pages ダッシュボードの各デプロイの「Branch alias」で確認)。
-2. Pages の **Preview 環境**に secret/変数を設定する(Production とは別枠。未設定だと
-   ゲートが fail-closed で全体503になる)。同じ OAuth クライアントを使い回してよい。
-3. Google の承認済みリダイレクトURIに
-   `https://<エイリアス>.<project>.pages.dev/api/auth/callback` を登録する。
-4. 任意で Preview 環境に `APP_BASE_URL=https://<エイリアス>.<project>.pages.dev` を
-   設定すると、hash URL で入ってもエイリアスに固定できる。
+| 環境 | ホスト | 保護 | 設定 |
+|---|---|---|---|
+| 本番 | カスタムドメイン(外部DNS) | 内製 OAuth | `AUTH_MODE` 未設定(既定) |
+| プレビュー(PR) | `*.pages.dev` | Cloudflare Access | `AUTH_MODE=access`(Preview環境) |
+| ローカル | `localhost:8788` | 内製 OAuth | `.dev.vars` |
 
-ブランチ名ごとに Google 登録が要るため、**任意のPRプレビュー全部で自動的に OAuth を
-効かせることはできない**。機能確認用には長命の `staging` ブランチを1本用意し、その
-エイリアスだけ登録しておくのが実用的。routine な PR レビューはコード + CI で行い、
-機能確認はローカル or staging で、という切り分けになる。
+なぜプレビューで OAuth を使わないか: OAuth の `redirect_uri` は **完全一致で事前登録が
+必須**(ワイルドカード不可)なので、**デプロイごとに変わるハッシュ付きプレビューURL**
+(`https://<コミットhash>.<project>.pages.dev`)では通せない。一方 pages.dev は
+Cloudflare 所有ゾーンなので Access を無料で掛けられる。よってプレビューは Access に任せ、
+Function 側の認証はスルーする。
 
-> プレビューを無認証で開放するのは非推奨(ポータル一覧 + GASプロキシが露出する)。
-> どうしても見た目だけ確認したい場合は Preview 環境限定のバイパスフラグを設ける等の
-> 対応もあり得るが、露出リスクを理解した上での判断とする。
+### プレビューの設定手順
+
+1. **Preview 環境の変数に `AUTH_MODE=access` を設定**(Pages の Settings →
+   Environment variables の **Preview** タブ。Production には設定しないこと)。
+   - これで pages.dev 上のプレビューは Function 認証をスルーする。
+   - 誤設定対策として、**バイパスは `*.pages.dev` ホストに限定**している。仮に
+     `AUTH_MODE=access` が Production に紛れ込んでも、カスタムドメイン上では常に
+     OAuth を要求する(fail-safe)。
+2. **Cloudflare Access でプレビューを保護**: Zero Trust → Access → Applications で
+   Self-hosted アプリを作り、対象ホストに `*.<project>.pages.dev`(またはプレビュー用
+   サブドメイン)を指定し、社内メールドメイン + 協力者のポリシーを設定する。
+   - ⚠️ **`AUTH_MODE=access` を設定したのに Access ポリシーを掛けていないと、
+     プレビューが無認証で全公開になる**(ポータル一覧 + GASプロキシが露出)。
+     必ずセットで設定すること。
+3. ヘッダ表示: Access 保護下では Access が `Cf-Access-Authenticated-User-Email` を
+   注入するので、`/api/me` はそのメールを返し画面ヘッダに表示される。
+
+> **本番の `<project>.pages.dev` URL について**: 本番デプロイは Production 環境の変数
+> (`AUTH_MODE` 未設定)で動くため、その pages.dev URL でも OAuth を要求する
+> (redirect 未登録なら単にログインできないだけで、露出はしない)。利用は
+> カスタムドメインで行う。
+
+### プレビューでも OAuth を通したい場合(任意)
+
+Access を使わず特定のプレビューで OAuth を検証したいなら、ハッシュURLではなく
+**ブランチ固定エイリアス** `https://<正規化ブランチ名>.<project>.pages.dev`
+(Pages ダッシュボードの各デプロイ「Branch alias」で確認)を使い、その callback を
+Google に登録し、Preview 環境に OAuth 用 secret を設定する(`AUTH_MODE` は設定しない)。
+ブランチ名ごとに Google 登録が要るため、長命の `staging` ブランチ運用が実用的。
+なお **OAuth フローそのものの動作確認はローカル実行が最短**なので、通常はそれで足りる。
 
 ## セキュリティ上の要点
 

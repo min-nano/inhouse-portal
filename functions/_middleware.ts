@@ -10,6 +10,12 @@
  * - 未認証の画面遷移(GET + Accept: text/html) → /api/auth/login へ 302
  * - 未認証のAPI → 401(JSON)
  * - /api/auth/* と /api/health は認証不要(ログイン導線・死活監視)
+ *
+ * プレビュー(PR)デプロイは Cloudflare Access で保護できる(pages.dev は
+ * Cloudflare 所有ゾーンなので Access が無料で効く)。その環境では
+ * AUTH_MODE=access を設定して Function 側の認証をスルーする。ただし誤って本番の
+ * カスタムドメインが素通しにならないよう、**バイパスは pages.dev ホストに限定**する
+ * (カスタムドメインでは常に OAuth を要求 = fail-safe)。
  */
 import type { Env } from "../src/server/app";
 import { getSessionFromRequest } from "../src/server/auth/session";
@@ -32,6 +38,12 @@ export async function onRequest(
 ): Promise<Response> {
   const { request, env, next } = context;
   const url = new URL(request.url);
+
+  // プレビュー(pages.dev)は Cloudflare Access が edge で保護する前提でスルー。
+  // カスタムドメイン(本番)では AUTH_MODE の値によらず OAuth を要求する。
+  if (env.AUTH_MODE === "access" && url.hostname.endsWith(".pages.dev")) {
+    return next();
+  }
 
   if (PUBLIC_PATHS.has(url.pathname)) return next();
 

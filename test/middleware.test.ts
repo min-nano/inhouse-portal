@@ -79,4 +79,28 @@ describe("_middleware auth gate", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(next).not.toHaveBeenCalled();
   });
+
+  it("AUTH_MODE=access + pages.dev はスルー(Access保護前提、secret不要)", async () => {
+    const { context, next } = makeContext(
+      new Request("https://preview-branch.inhouse-portal.pages.dev/", {
+        headers: { accept: "text/html" },
+      }),
+      { AUTH_MODE: "access" },
+    );
+    const res = await onRequest(context);
+    expect(res).toBe(NEXT);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("AUTH_MODE=access でもカスタムドメインでは OAuth を要求(fail-safe)", async () => {
+    const { context, next } = makeContext(
+      new Request("https://portal.example.co.jp/api/apps", {
+        headers: { accept: "application/json" },
+      }),
+      { AUTH_MODE: "access", AUTH_SECRET: SECRET },
+    );
+    const res = await onRequest(context);
+    expect(res.status).toBe(401);
+    expect(next).not.toHaveBeenCalled();
+  });
 });

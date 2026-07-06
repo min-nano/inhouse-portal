@@ -301,9 +301,28 @@ describe("GET /api/me", () => {
     });
   });
 
-  it("AUTH_SECRET 未設定は503", async () => {
-    const res = await app.request("/api/me", {}, baseEnv({ AUTH_SECRET: undefined }));
-    expect(res.status).toBe(503);
+  it("未認証(secret無し・Accessヘッダ無し)は401", async () => {
+    const res = await app.request(
+      "/api/me",
+      {},
+      baseEnv({ AUTH_SECRET: undefined }),
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ authenticated: false });
+  });
+
+  it("Cloudflare Access 保護下は注入ヘッダのメールを返す", async () => {
+    const res = await app.request(
+      "/api/me",
+      { headers: { "Cf-Access-Authenticated-User-Email": "taro@example.co.jp" } },
+      baseEnv({ AUTH_SECRET: undefined }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      authenticated: true,
+      email: "taro@example.co.jp",
+      name: null,
+    });
   });
 });
 
