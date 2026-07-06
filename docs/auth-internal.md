@@ -158,11 +158,41 @@ ALLOWED_EMAIL_DOMAINS=*@example.co.jp
 ```
 
 - Google 側の承認済みリダイレクトURIに `http://localhost:8788/api/auth/callback`
-  を登録しておくこと。
+  を登録しておくこと(Google は loopback の http を特別に許可している)。
 - `secure` Cookie はローカルの `http://localhost` でも Chrome では有効
   (localhost は secure コンテキスト扱い)。
 - KV をローカルで使うなら `wrangler pages dev --kv AUTH_KV`。未指定でも env の
   許可リストで動作する。
+
+`wrangler pages dev` は `functions/_middleware.ts` もルートも本番と同一のものを
+動かし、実際の Google ログインを通せる。**動作確認の第一手段はこのローカル実行**。
+
+## プレビュー(PR)デプロイでの認証
+
+Google OAuth の `redirect_uri` は **完全一致で事前登録が必須**(ワイルドカード不可)
+なので、**デプロイごとに変わるハッシュ付きプレビューURL**
+(`https://<コミットhash>.<project>.pages.dev`)では OAuth を通せない
+(`redirect_uri_mismatch` になる)。プレビューで検証したい場合は、ハッシュURLではなく
+**ブランチ単位の固定エイリアス**を使う:
+
+1. Pages はデプロイのhash URLとは別に、ブランチごとに決定的なエイリアス
+   `https://<正規化ブランチ名>.<project>.pages.dev` を払い出す
+   (正確なホストは Pages ダッシュボードの各デプロイの「Branch alias」で確認)。
+2. Pages の **Preview 環境**に secret/変数を設定する(Production とは別枠。未設定だと
+   ゲートが fail-closed で全体503になる)。同じ OAuth クライアントを使い回してよい。
+3. Google の承認済みリダイレクトURIに
+   `https://<エイリアス>.<project>.pages.dev/api/auth/callback` を登録する。
+4. 任意で Preview 環境に `APP_BASE_URL=https://<エイリアス>.<project>.pages.dev` を
+   設定すると、hash URL で入ってもエイリアスに固定できる。
+
+ブランチ名ごとに Google 登録が要るため、**任意のPRプレビュー全部で自動的に OAuth を
+効かせることはできない**。機能確認用には長命の `staging` ブランチを1本用意し、その
+エイリアスだけ登録しておくのが実用的。routine な PR レビューはコード + CI で行い、
+機能確認はローカル or staging で、という切り分けになる。
+
+> プレビューを無認証で開放するのは非推奨(ポータル一覧 + GASプロキシが露出する)。
+> どうしても見た目だけ確認したい場合は Preview 環境限定のバイパスフラグを設ける等の
+> 対応もあり得るが、露出リスクを理解した上での判断とする。
 
 ## セキュリティ上の要点
 
