@@ -201,3 +201,15 @@ npm run deploy   # vite build → wrangler pages deploy dist/client --project-na
 GitHub Actions (`.github/workflows/ci.yml`) が push / PR ごとに実行:
 typecheck → test → フロントビルド → Pages Functions バンドル検証
 (`wrangler pages functions build`)。
+
+## デプロイ後の認証チェック
+
+デプロイのたびに「認証が本当にかかっているか」を外形で自動検証する。
+`.github/workflows/post-deploy-smoke.yml` が Cloudflare Pages のデプロイ完了
+(`deployment_status`)で発火し、`scripts/smoke.mjs` が本番URLへ実際にアクセスして
+未認証アクセスが弾かれること(`/api/apps`→401, `/`→302, `/api/proxy/:id`→401)、および
+**Zero Trust を装った偽装 `Cf-Access-*` ヘッダでも素通りしないこと**を確認する。
+同ワークフローは30分ごとの cron でも回り、継続ヘルスチェック(設定ドリフト検知)を兼ねる。
+
+検査対象はリポジトリ変数 `SMOKE_BASE_URLS`(カンマ区切り)で設定する。詳細は
+[docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。

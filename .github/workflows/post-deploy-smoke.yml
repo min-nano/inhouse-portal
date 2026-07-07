@@ -1,0 +1,64 @@
+name: Post-deploy smoke (auth gate)
+
+# デプロイ後に「認証がかかっていること」を外形で検証する。
+# 未認証アクセスが弾かれること + Zero Trust(Cloudflare Access)を偽装した
+# ヘッダでも本番では拒否されること(fail-closed)を確認する。
+# scripts/smoke.mjs の中身が実際の検査ロジック。
+
+on:
+  # ① Cloudflare Pages のデプロイ完了で発火(Pages は GitHub Deployment を作る)
+  deployment_status:
+  # ② 継続ヘルスチェック(設定漏れ・secret ローテ失敗などデプロイ後のドリフト検知)
+  schedule:
+    - cron: "*/30 * * * *" # 30分ごと
+  # ③ 手動実行(URL を上書き可能)
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "検査する base URL(カンマ区切り)。空なら SMOKE_BASE_URLS を使う"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # deployment_status のときは production の成功時のみ。
+    # (preview は前段の Cloudflare Access が独自のログイン応答を返すため対象外)
+    if: >-
+      github.event_name != 'deployment_status' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment_status.environment == 'production')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve target URLs
+        id: target
+        env:
+          # 本番の検査対象。カスタムドメインと(あれば)pages.dev エイリアスを
+          # カンマ区切りで設定しておく。Settings → Secrets and variables → Actions → Variables。
+          SMOKE_BASE_URLS: ${{ vars.SMOKE_BASE_URLS }}
+          DISPATCH_URLS: ${{ github.event.inputs.urls }}
+          EVENT_URL: ${{ github.event.deployment_status.environment_url }}
+        run: |
+          if [ -n "$DISPATCH_URLS" ]; then
+            urls="$DISPATCH_URLS"
+          elif [ -n "$SMOKE_BASE_URLS" ]; then
+            urls="$SMOKE_BASE_URLS"
+          else
+            urls="$EVENT_URL"
+          fi
+          if [ -z "$urls" ]; then
+            echo "検査対象URLが未設定です。リポジトリ変数 SMOKE_BASE_URLS を設定してください。" >&2
+            exit 2
+          fi
+          echo "urls=$urls" >> "$GITHUB_OUTPUT"
+
+      - name: Run smoke test
+        run: node scripts/smoke.mjs "${{ steps.target.outputs.urls }}"
