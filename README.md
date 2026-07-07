@@ -142,7 +142,9 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    `*.<project>.pages.dev` にポリシーを掛けるだけでよい(**追加の環境変数は不要**)。
    middleware が「pages.dev + Access アサーションヘッダ ⇒ スルー、カスタムドメイン ⇒
    常に OAuth、Access 無しの pages.dev ⇒ OAuth にフォールバック(fail-closed)」を
-   ホスト名とヘッダから自動判定する。詳細は
+   ホスト名とヘッダから自動判定する。さらに Preview 環境に
+   `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` を設定すると、Access トークンを
+   **RS256 署名検証**してからスルーする(ヘッダ偽装を暗号的に排除・推奨)。詳細は
    [docs/auth-internal.md](docs/auth-internal.md) の「環境ごとの保護方針」を参照。
 
 ### カスタムドメイン (外部サブドメインをCNAMEで割り当てる)

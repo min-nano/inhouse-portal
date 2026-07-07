@@ -15,6 +15,8 @@
   //   npx wrangler pages secret put GOOGLE_CLIENT_SECRET
   //   (任意) ALLOWED_EMAIL_DOMAINS / ALLOWED_EMAILS / GOOGLE_HOSTED_DOMAIN /
   //          APP_BASE_URL / SESSION_TTL_HOURS はダッシュボードの環境変数で設定
+  //   (プレビュー) CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD を Preview 環境に設定すると
+  //          Cloudflare Access トークンを署名検証してスルーする (docs/auth-internal.md)
   //
   // --- 許可リスト用 KV (任意・推奨) ---
   // デプロイ無しで許可リストを編集したい場合、KV namespace を作って

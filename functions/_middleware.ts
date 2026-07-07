@@ -20,8 +20,13 @@
  * `*.pages.dev` かつ Access アサーションがあれば「Access 保護済み」として Function
  * 認証をスルーする。カスタムドメインでは(ヘッダ偽装があっても)常に OAuth を要求し、
  * Access 無しの pages.dev はヘッダが無いので OAuth にフォールバックする(fail-closed)。
+ *
+ * CF_ACCESS_TEAM_DOMAIN を設定すると、アサーションを **RS256 署名検証**(iss/aud/exp)
+ * してからスルーする。これにより Access 未適用の pages.dev でのヘッダ偽装も弾ける。
+ * 未設定時は presence チェック(ヘッダの有無のみ)にフォールバックする。
  */
 import type { Env } from "../src/server/app";
+import { verifyAccessJwt } from "../src/server/auth/cf-access";
 import { getSessionFromRequest } from "../src/server/auth/session";
 
 const PUBLIC_PATHS = new Set([
@@ -43,14 +48,25 @@ export async function onRequest(
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // 追加変数なしの環境判定: pages.dev 上で Cloudflare Access のアサーションが
-  // 付いていれば、Access が edge で保護済みなので Function 認証はスルーする。
-  // バイパスは pages.dev ホスト限定なので、本番カスタムドメインは(ヘッダ偽装が
-  // あっても)常に OAuth を要求する。
-  const behindAccess =
-    url.hostname.endsWith(".pages.dev") &&
-    request.headers.has("Cf-Access-Jwt-Assertion");
-  if (behindAccess) return next();
+  // 環境判定: pages.dev 上で Cloudflare Access のアサーションが付いていれば、
+  // Access が edge で保護済みなので Function 認証はスルーする。バイパスは pages.dev
+  // ホスト限定なので、本番カスタムドメインは(ヘッダ偽装があっても)常に OAuth を要求。
+  const accessToken = request.headers.get("Cf-Access-Jwt-Assertion");
+  if (url.hostname.endsWith(".pages.dev") && accessToken) {
+    const teamDomain = env.CF_ACCESS_TEAM_DOMAIN;
+    if (teamDomain) {
+      // 厳密モード: 署名検証が通ったときだけスルー(偽装は弾いて OAuth へ)
+      const identity = await verifyAccessJwt(accessToken, {
+        teamDomain,
+        aud: env.CF_ACCESS_AUD,
+      });
+      if (identity) return next();
+    } else {
+      // 暫定モード: presence チェックのみ(署名検証を有効にするには
+      // CF_ACCESS_TEAM_DOMAIN を設定する)
+      return next();
+    }
+  }
 
   if (PUBLIC_PATHS.has(url.pathname)) return next();
 

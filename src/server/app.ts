@@ -44,6 +44,14 @@ export type Env = {
   ALLOWED_EMAILS?: string;
   /** 許可リスト(運用中に追加・失効する分)を置くKV */
   AUTH_KV?: KVNamespace;
+  /**
+   * プレビュー(pages.dev)で Cloudflare Access のトークンを署名検証するための設定。
+   * 設定すると presence チェックから厳密な RS256 署名検証に格上げされる。
+   * - CF_ACCESS_TEAM_DOMAIN: "myteam" 等(iss を固定)
+   * - CF_ACCESS_AUD: Access アプリの AUD タグ(設定時は aud も固定)
+   */
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
 };
 
 type AppContext = Context<{ Bindings: Env }>;
