@@ -10,8 +10,14 @@
   </head>
   <body>
     <header class="site-header">
-      <h1>社内ポータル</h1>
-      <p class="subtitle">設計ツール・GASアプリ リンク集</p>
+      <div class="site-header-main">
+        <h1>社内ポータル</h1>
+        <p class="subtitle">設計ツール・GASアプリ リンク集</p>
+      </div>
+      <div id="user" class="user" hidden>
+        <span id="user-email" class="user-email"></span>
+        <a class="logout" href="/api/auth/logout">ログアウト</a>
+      </div>
     </header>
 
     <main>

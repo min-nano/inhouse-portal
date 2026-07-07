@@ -1,0 +1,137 @@
+/**
+ * Google OAuth 2.0 (OIDC / authorization code + PKCE)。
+ *
+ * 認可コードは client_secret 付きでサーバー間(TLS)交換するため、返ってくる
+ * id_token は Google から直接受け取った信頼できるトークンとして扱い、
+ * クレーム(iss/aud/exp/email/email_verified)の検証のみ行う
+ * (JWKS 署名検証は belt-and-suspenders。必要になれば追加する)。
+ */
+
+const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const VALID_ISS = new Set([
+  "https://accounts.google.com",
+  "accounts.google.com",
+]);
+
+export type GoogleConfig = {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+};
+
+export type GoogleIdentity = {
+  email: string;
+  emailVerified: boolean;
+  name?: string;
+  hd?: string;
+};
+
+function base64urlFromBytes(bytes: Uint8Array): string {
+  let str = "";
+  for (const b of bytes) str += String.fromCharCode(b);
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeBase64url(input: string): string {
+  const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+/** ランダム文字列(state / PKCE code_verifier 用)。base64url なのでPKCEの許容文字に収まる */
+export function randomString(bytes = 32): string {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return base64urlFromBytes(arr);
+}
+
+/** PKCE code_challenge (S256) を生成 */
+export async function pkceChallenge(verifier: string): Promise<string> {
+  const data = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64urlFromBytes(new Uint8Array(digest));
+}
+
+/** Google の同意画面へのリダイレクトURLを組み立てる */
+export function buildAuthUrl(
+  cfg: GoogleConfig,
+  opts: { state: string; codeChallenge: string; hostedDomain?: string },
+): string {
+  const url = new URL(AUTH_ENDPOINT);
+  url.searchParams.set("client_id", cfg.clientId);
+  url.searchParams.set("redirect_uri", cfg.redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("state", opts.state);
+  url.searchParams.set("code_challenge", opts.codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("prompt", "select_account");
+  if (opts.hostedDomain) url.searchParams.set("hd", opts.hostedDomain);
+  return url.toString();
+}
+
+/** id_token(JWT)のペイロードを検証して身元情報を取り出す */
+export function parseIdToken(
+  idToken: string,
+  expectedAud: string,
+): GoogleIdentity {
+  const parts = idToken.split(".");
+  if (parts.length !== 3) throw new Error("malformed id_token");
+  const payload = JSON.parse(decodeBase64url(parts[1]!)) as Record<
+    string,
+    unknown
+  >;
+
+  if (typeof payload.iss !== "string" || !VALID_ISS.has(payload.iss)) {
+    throw new Error("invalid iss");
+  }
+  if (payload.aud !== expectedAud) throw new Error("invalid aud");
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp === "number" && payload.exp < now) {
+    throw new Error("id_token expired");
+  }
+  if (typeof payload.email !== "string" || !payload.email) {
+    throw new Error("email missing");
+  }
+
+  return {
+    email: payload.email,
+    emailVerified:
+      payload.email_verified === true || payload.email_verified === "true",
+    name: typeof payload.name === "string" ? payload.name : undefined,
+    hd: typeof payload.hd === "string" ? payload.hd : undefined,
+  };
+}
+
+/** 認可コードをトークン交換し、身元情報を返す */
+export async function exchangeCode(
+  cfg: GoogleConfig,
+  code: string,
+  codeVerifier: string,
+): Promise<GoogleIdentity> {
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    code,
+    code_verifier: codeVerifier,
+    grant_type: "authorization_code",
+    redirect_uri: cfg.redirectUri,
+  });
+  const res = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`token exchange failed: ${res.status}`);
+  }
+  const data = (await res.json()) as { id_token?: unknown };
+  if (typeof data.id_token !== "string") {
+    throw new Error("id_token missing in token response");
+  }
+  return parseIdToken(data.id_token, cfg.clientId);
+}

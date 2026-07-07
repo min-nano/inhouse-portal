@@ -1,25 +1,37 @@
 # inhouse-portal
 
 事務所内+委託協力者向けのポータルサイト。設計ツール等(主にGAS Webアプリ)への
-リンクを1か所にまとめ、Cloudflare Pages + Functions でホスティングし
-Cloudflare Access でアクセス制限をかける。
+リンクを1か所にまとめ、Cloudflare Pages + Functions でホスティングし、
+**Google ログイン(内製認証)** でアクセス制限をかける。
 
 - 制作方針: [docs/PROPOSAL.md](docs/PROPOSAL.md)
 - ロードマップ: [docs/ROADMAP.md](docs/ROADMAP.md)
+- 認証 (Google OAuth) 設計・設定: [docs/auth-internal.md](docs/auth-internal.md)
 - Phase 2 (GAS自動列挙) 設計: [docs/phase2-gas-registry.md](docs/phase2-gas-registry.md)
 
 ## アーキテクチャ
 
 ```
-ユーザー → [Cloudflare Access] → [Cloudflare Pages]
-                                   ├─ 静的アセット (ポータル画面) … Pagesが直接配信
-                                   └─ Pages Functions (/api/*)
-                                        ├─ GET /api/apps       … 台帳 (data/apps.json)
-                                        └─ ALL /api/proxy/:id  … GASへの中継 (CORS回避・URL秘匿)
+ユーザー → [Cloudflare Pages + Functions]
+             └─ functions/_middleware.ts … 全リクエストの認証ゲート (Google OAuth)
+                  ├─ 認証済み → 静的アセット (ポータル画面) … Pagesが配信
+                  └─ /api/*
+                       ├─ GET  /api/auth/login|callback|logout … ログイン導線
+                       ├─ GET  /api/me         … ログイン中ユーザー
+                       ├─ GET  /api/apps       … 台帳 (data/apps.json)
+                       └─ ALL  /api/proxy/:id  … GASへの中継 (CORS回避・URL秘匿)
 ```
 
-`/api/*` は `functions/api/[[route]].ts` (Hono) が処理し、それ以外の画面・CSS・JS
-などの静的アセットは Pages が `dist/client` から直接配信する。
+認証ゲート `functions/_middleware.ts` が **静的な画面ファイルを含む全リクエスト** に
+割り込み、自前セッション(HMAC署名Cookie)を検証する。`/api/*` は
+`functions/api/[[route]].ts` (Hono) が処理し、認証を通過した静的アセットは Pages が
+`dist/client` から直接配信する。
+
+> 💡 **なぜ Cloudflare Access ではなく内製認証か**: Access は Cloudflare
+> アカウント内のホスト名しか保護できず、外部DNSに CNAME で割り当てた
+> カスタムドメインは対象にできない(有料の Partial CNAME setup が必要)。
+> ネームサーバ移管を避ける本構成と両立させるため認証をアプリ層で実装した。
+> 詳細と設定手順は [docs/auth-internal.md](docs/auth-internal.md)。
 
 ## アプリの追加・修正
 
@@ -56,6 +68,18 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 > 表示されないが、**Pages プロジェクトは Wrangler CLI から作成でき**、以後は
 > ダッシュボードの Workers & Pages 一覧に表示されてカスタムドメイン等も設定できる。
 
+> ℹ️ **このリポジトリには `wrangler.jsonc` を置かない**。Pages は設定ファイルが
+> あるとそれをソースとみなし、**ダッシュボードのバインディング/環境変数の編集が
+> 無効化される**ため、KV バインディング等をダッシュボードで運用したい本プロジェクトでは
+> 意図的に削除している。代わりに以下をすべて **Cloudflare ダッシュボード**で設定する:
+> - **Settings → Functions → Compatibility date**: `2026-06-01`(Functions の実行時互換日)
+> - **Settings → Functions → KV namespace bindings**: binding 名 `AUTH_KV`(任意・許可リスト用)
+> - **Settings → Variables and Secrets**: 認証 secret / 環境変数(下記手順4)
+>
+> 設定ファイルが無いぶん、デプロイコマンドには出力先とプロジェクト名を明示する
+> (`wrangler pages deploy dist/client --project-name inhouse-portal`)。`npm run deploy` /
+> `npm run dev` はこの引数込みで定義済み。
+
 1. **Pages プロジェクトを作成 (初回1回だけ)**:
    `wrangler pages deploy` は既存プロジェクトにしかデプロイできず
    (無いと `The Pages project "inhouse-portal" does not exist.`)、
@@ -67,10 +91,10 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    ```
 
    > 手元にターミナルが無い場合は、ビルドの Deploy command を一時的に
-   > `npx wrangler pages project create inhouse-portal --production-branch main; npx wrangler pages deploy`
+   > `npx wrangler pages project create inhouse-portal --production-branch main; npx wrangler pages deploy dist/client --project-name inhouse-portal`
    > にすれば、ビルド環境から作成＋デプロイできる (トークンに Pages:Edit がある前提。
    > 2回目以降は作成が「既に存在」で失敗するが `;` で無視されデプロイに進む)。
-   > 初回成功後は Deploy command を `npx wrangler pages deploy` に戻してよい。
+   > 初回成功後は Deploy command を `npx wrangler pages deploy dist/client --project-name inhouse-portal` に戻してよい。
 
 2. **Pages 権限付きの API トークンをビルドに渡す**:
    旧 Workers ビルドが使うトークンは **Workers 用スコープ**で Pages の権限が無いため、
@@ -95,21 +119,44 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    すでにこのリポジトリを Git 連携している (旧 Workers) ビルドプロジェクトの
    設定を開き、**Deploy command を変更**する。
    - Build command: `npm run build`
-   - Deploy command: `npx wrangler deploy` → **`npx wrangler pages deploy`** に変更
-     (`wrangler.jsonc` の `name` と `pages_build_output_dir` を読むため引数は不要。
-      うまくいかない場合は `npx wrangler pages deploy dist/client --project-name inhouse-portal`)
+   - Deploy command: **`npx wrangler pages deploy dist/client --project-name inhouse-portal`**
+     (`wrangler.jsonc` を置かないので、出力先とプロジェクト名は引数で明示する)
    - 以後 main への push で自動デプロイされる
 
    > ⚠️ Deploy command が `npx wrangler deploy` (Workers用) のままだと
    > `Missing entry-point to Worker script or to assets directory` で失敗する。
-   > 必ず `wrangler pages deploy` に変更すること。手元から一発で出すなら
-   > `npm run deploy` (= `vite build` → `wrangler pages deploy`) でもよい。
+   > 必ず `wrangler pages deploy dist/client --project-name inhouse-portal` に変更すること。
+   > 手元から一発で出すなら `npm run deploy` (= `vite build` → `wrangler pages deploy ...`) でもよい。
 
-4. **Cloudflare Access で保護**: Zero Trust → Access → Applications →
-   Add an application (Self-hosted) で PagesのURL (下記カスタムドメイン) を指定し、
-   ポリシーを作成。
-   - 例: メールドメイン `@example.co.jp` を許可 + 協力者の個別メールを許可
-   - Identity Provider に Google を設定するとGoogleログインになる
+4. **内製認証 (Google OAuth) を設定**: Google Cloud で OAuth クライアントを作り、
+   Pages に secret / 環境変数を登録する。詳細手順は
+   [docs/auth-internal.md](docs/auth-internal.md) を参照。要点だけ:
+   - Google Cloud → OAuth クライアント ID (ウェブ) を作成し、承認済みリダイレクト
+     URI に `https://<カスタムドメイン>/api/auth/callback` を登録
+   - 必須 secret: `AUTH_SECRET`(ランダム長文字列)/ `GOOGLE_CLIENT_ID` /
+     `GOOGLE_CLIENT_SECRET`
+     ```bash
+     openssl rand -base64 48 | npx wrangler pages secret put AUTH_SECRET
+     npx wrangler pages secret put GOOGLE_CLIENT_ID
+     npx wrangler pages secret put GOOGLE_CLIENT_SECRET
+     ```
+   - 許可リスト: `ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS`(`*` ワイルドカード可)を
+     環境変数で設定。頻繁に出入りするなら KV `AUTH_KV` の `allowlist` キーに置くと
+     デプロイ不要で編集できる(無料枠で収まる)
+   - 例: `ALLOWED_EMAIL_DOMAINS=*@example.co.jp` + 協力者の個別メールを `ALLOWED_EMAILS`
+
+   > ⚠️ `AUTH_SECRET` 未設定のままだと認証ゲートは fail-closed で全体を 503 にする
+   > (設定漏れで丸ごと公開される事故を防ぐため)。デプロイ前に必ず登録すること。
+
+   **プレビュー(PR)デプロイの保護**: プレビューは `*.pages.dev`(Cloudflare 所有
+   ゾーン)上なので **Cloudflare Access を無料で掛けられる**。Zero Trust → Access で
+   `*.<project>.pages.dev` にポリシーを掛けるだけでよい(**追加の環境変数は不要**)。
+   Function 認証をスルーするのは「pages.dev ホスト かつ Preview 環境に
+   `CF_ACCESS_TEAM_DOMAIN`+`CF_ACCESS_AUD` の両方が設定済み かつ Access トークンの
+   **RS256 署名検証が成功**」のときだけ。**本番(Production)にはこの2つを設定しない**ので、
+   本番の pages.dev エイリアスに偽装ヘッダでアクセスされても確実に OAuth ゲートされる
+   (カスタムドメインはそもそも常に OAuth)。詳細は
+   [docs/auth-internal.md](docs/auth-internal.md) の「環境ごとの保護方針」を参照。
 
 ### カスタムドメイン (外部サブドメインをCNAMEで割り当てる)
 
@@ -146,7 +193,7 @@ npx wrangler pages secret put PROXY_TARGETS
 ### 手動デプロイ
 
 ```bash
-npm run deploy   # vite build → wrangler pages deploy
+npm run deploy   # vite build → wrangler pages deploy dist/client --project-name inhouse-portal
 ```
 
 ## CI
