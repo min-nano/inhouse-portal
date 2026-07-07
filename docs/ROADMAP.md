@@ -15,8 +15,11 @@
 
 - [ ] Pages プロジェクトを作成 (ダッシュボードにPages作成導線が無いためCLIで):
       `npx wrangler pages project create inhouse-portal --production-branch main`
-- [ ] 既存のGit連携ビルドの Deploy command を `npx wrangler pages deploy` に変更し
-      自動デプロイを有効化 (Build command: `npm run build`)
+- [ ] 既存のGit連携ビルドの Deploy command を
+      `npx wrangler pages deploy dist/client --project-name inhouse-portal` に変更し
+      自動デプロイを有効化 (Build command: `npm run build`。`wrangler.jsonc` は置かない)
+- [ ] ダッシュボードで Compatibility date (`2026-06-01`) と KV バインディング
+      (`AUTH_KV`) を設定 (設定ファイルを置かずダッシュボードで運用)
 - [ ] カスタムドメインを割り当て: Pages → Custom domains で `portal.example.co.jp`
       を登録し、他社DNSに `CNAME → <project>.pages.dev` を張る
       (ネームサーバをCloudflareに移さず外部サブドメインを使える)

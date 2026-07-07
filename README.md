@@ -68,6 +68,18 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 > 表示されないが、**Pages プロジェクトは Wrangler CLI から作成でき**、以後は
 > ダッシュボードの Workers & Pages 一覧に表示されてカスタムドメイン等も設定できる。
 
+> ℹ️ **このリポジトリには `wrangler.jsonc` を置かない**。Pages は設定ファイルが
+> あるとそれをソースとみなし、**ダッシュボードのバインディング/環境変数の編集が
+> 無効化される**ため、KV バインディング等をダッシュボードで運用したい本プロジェクトでは
+> 意図的に削除している。代わりに以下をすべて **Cloudflare ダッシュボード**で設定する:
+> - **Settings → Functions → Compatibility date**: `2026-06-01`(Functions の実行時互換日)
+> - **Settings → Functions → KV namespace bindings**: binding 名 `AUTH_KV`(任意・許可リスト用)
+> - **Settings → Variables and Secrets**: 認証 secret / 環境変数(下記手順4)
+>
+> 設定ファイルが無いぶん、デプロイコマンドには出力先とプロジェクト名を明示する
+> (`wrangler pages deploy dist/client --project-name inhouse-portal`)。`npm run deploy` /
+> `npm run dev` はこの引数込みで定義済み。
+
 1. **Pages プロジェクトを作成 (初回1回だけ)**:
    `wrangler pages deploy` は既存プロジェクトにしかデプロイできず
    (無いと `The Pages project "inhouse-portal" does not exist.`)、
@@ -79,10 +91,10 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    ```
 
    > 手元にターミナルが無い場合は、ビルドの Deploy command を一時的に
-   > `npx wrangler pages project create inhouse-portal --production-branch main; npx wrangler pages deploy`
+   > `npx wrangler pages project create inhouse-portal --production-branch main; npx wrangler pages deploy dist/client --project-name inhouse-portal`
    > にすれば、ビルド環境から作成＋デプロイできる (トークンに Pages:Edit がある前提。
    > 2回目以降は作成が「既に存在」で失敗するが `;` で無視されデプロイに進む)。
-   > 初回成功後は Deploy command を `npx wrangler pages deploy` に戻してよい。
+   > 初回成功後は Deploy command を `npx wrangler pages deploy dist/client --project-name inhouse-portal` に戻してよい。
 
 2. **Pages 権限付きの API トークンをビルドに渡す**:
    旧 Workers ビルドが使うトークンは **Workers 用スコープ**で Pages の権限が無いため、
@@ -107,15 +119,14 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    すでにこのリポジトリを Git 連携している (旧 Workers) ビルドプロジェクトの
    設定を開き、**Deploy command を変更**する。
    - Build command: `npm run build`
-   - Deploy command: `npx wrangler deploy` → **`npx wrangler pages deploy`** に変更
-     (`wrangler.jsonc` の `name` と `pages_build_output_dir` を読むため引数は不要。
-      うまくいかない場合は `npx wrangler pages deploy dist/client --project-name inhouse-portal`)
+   - Deploy command: **`npx wrangler pages deploy dist/client --project-name inhouse-portal`**
+     (`wrangler.jsonc` を置かないので、出力先とプロジェクト名は引数で明示する)
    - 以後 main への push で自動デプロイされる
 
    > ⚠️ Deploy command が `npx wrangler deploy` (Workers用) のままだと
    > `Missing entry-point to Worker script or to assets directory` で失敗する。
-   > 必ず `wrangler pages deploy` に変更すること。手元から一発で出すなら
-   > `npm run deploy` (= `vite build` → `wrangler pages deploy`) でもよい。
+   > 必ず `wrangler pages deploy dist/client --project-name inhouse-portal` に変更すること。
+   > 手元から一発で出すなら `npm run deploy` (= `vite build` → `wrangler pages deploy ...`) でもよい。
 
 4. **内製認証 (Google OAuth) を設定**: Google Cloud で OAuth クライアントを作り、
    Pages に secret / 環境変数を登録する。詳細手順は
@@ -182,7 +193,7 @@ npx wrangler pages secret put PROXY_TARGETS
 ### 手動デプロイ
 
 ```bash
-npm run deploy   # vite build → wrangler pages deploy
+npm run deploy   # vite build → wrangler pages deploy dist/client --project-name inhouse-portal
 ```
 
 ## CI

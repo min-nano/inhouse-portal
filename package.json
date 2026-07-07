@@ -5,13 +5,13 @@
   "type": "module",
   "description": "事務所内+委託協力者向けポータル (GASツールリンク集 / Cloudflare Pages + Functions)",
   "scripts": {
-    "dev": "npm run build && wrangler pages dev",
+    "dev": "npm run build && wrangler pages dev dist/client --compatibility-date=2026-06-01",
     "dev:web": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy": "npm run build && wrangler pages deploy"
+    "deploy": "npm run build && wrangler pages deploy dist/client --project-name inhouse-portal"
   },
   "dependencies": {
     "hono": "^4.6.0",
