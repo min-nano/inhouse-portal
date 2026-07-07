@@ -206,10 +206,15 @@ typecheck → test → フロントビルド → Pages Functions バンドル検
 
 デプロイのたびに「認証が本当にかかっているか」を外形で自動検証する。
 `.github/workflows/post-deploy-smoke.yml` が Cloudflare Pages のデプロイ完了
-(`deployment_status`)で発火し、`scripts/smoke.mjs` が本番URLへ実際にアクセスして
-未認証アクセスが弾かれること(`/api/apps`→401, `/`→302, `/api/proxy/:id`→401)、および
-**Zero Trust を装った偽装 `Cf-Access-*` ヘッダでも素通りしないこと**を確認する。
-同ワークフローは30分ごとの cron でも回り、継続ヘルスチェック(設定ドリフト検知)を兼ねる。
+(`deployment_status`)で発火し、`scripts/smoke.mjs` が対象URLへ実際にアクセスして
+未認証アクセスが弾かれること、および **Zero Trust を装った偽装 `Cf-Access-*` ヘッダでも
+素通りしないこと** を確認する。本番とプレビューで認証モデルが違うため2モードで実行する:
 
-検査対象はリポジトリ変数 `SMOKE_BASE_URLS`(カンマ区切り)で設定する。詳細は
-[docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。
+- **本番**(`environment` = production): カスタムドメイン等を厳密なステータスで検証
+  (`/api/apps`→401, `/`→302→login, `/api/proxy/:id`→401)。対象はリポジトリ変数
+  `SMOKE_BASE_URLS`(カンマ区切り)。
+- **プレビュー**(ブランチ/PR デプロイ): 前段の Cloudflare Access でホスト全体が
+  ゲートされるため、`environment_url` に対し「未認証で `200` を返さない=公開されて
+  いない」ことを検証。
+
+詳細は [docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。
