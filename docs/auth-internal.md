@@ -339,19 +339,38 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 **トリガー**(cron は付けない):
 - **デプロイ完了**: Cloudflare Pages が発行する GitHub Deployment の `deployment_status`
   (success)で発火。`environment` に `production` を含めば ① production モード、
-  それ以外(preview / ブランチ名)は ② preview モードで、プレビューは `environment_url`
-  を対象に検査する。
+  それ以外(preview / ブランチ名)は ② preview モードで検査する。
 - **手動**: `workflow_dispatch`(`urls` と `mode` を上書き可)。
 
-**設定**: 本番の検査対象はリポジトリ変数(Settings → Secrets and variables → Actions →
-**Variables**)`SMOKE_BASE_URLS` にカンマ区切りで入れる。本番カスタムドメインに加え、
-本番の pages.dev エイリアス(`<project>.pages.dev`)も入れておくと、エイリアス経由の
-偽装アクセスもまとめて検証できる。プレビューはデプロイごとにURLが変わるため、
-`environment_url` を自動で使う(変数設定は不要)。
+**検査対象URLの解決**: 3系統のURLを組み合わせて検査する。
+
+| 種類 | 例 | 取得元 |
+|---|---|---|
+| カスタムドメイン | `portal.example.co.jp` | 変数 `SMOKE_BASE_URLS`(手入力) |
+| 本番固定 pages.dev | `inhouse-portal.pages.dev` | 変数 `SMOKE_BASE_URLS`(手入力) |
+| デプロイ毎のユニークURL / ブランチエイリアス | `<hash>.<project>.pages.dev` / `<branch>.<project>.pages.dev` | Cloudflare Pages API を commit SHA で解決([`scripts/cf-deploy-urls.mjs`](../scripts/cf-deploy-urls.mjs)) |
+
+固定分(上2つ)はリポジトリ変数(Settings → Secrets and variables → Actions →
+**Variables**)`SMOKE_BASE_URLS` にカンマ区切りで入れる:
 
 ```
 SMOKE_BASE_URLS = https://portal.example.co.jp,https://inhouse-portal.pages.dev
 ```
+
+デプロイ毎に変わるユニークURL/エイリアスは固定値にできないため、`deployment_status`
+イベントの `deployment.sha` で当該デプロイを Cloudflare Pages API から特定して取得する。
+このために **GitHub Secrets** を設定する(Actions → Secrets):
+
+- `CLOUDFLARE_API_TOKEN` … `Account → Cloudflare Pages → Read`(既存の Pages:Edit トークンでも可)
+- `CLOUDFLARE_ACCOUNT_ID` … 対象アカウントID
+- (任意)変数 `CF_PAGES_PROJECT` … プロジェクト名。既定 `inhouse-portal`
+
+API解決は **失敗しても本命のスモークは落とさない**(トークン未設定・該当なし等は
+空を返してフォールバック)。Secrets 未設定でも、preview は `environment_url`、production は
+`SMOKE_BASE_URLS` で最低限の検査は動く。API を使う API エンドポイントは
+`GET /accounts/{account}/pages/projects/{project}/deployments?env={production|preview}`
+で、各デプロイの `url` と `aliases` を commit SHA(`deployment_trigger.metadata.commit_hash`)
+で突き合わせて解決する。
 
 > 継続的なドリフト監視(secret ローテ失敗・環境変数消失など、デプロイ後に認証が壊れる
 > ケース)が必要になったら、外部の常時監視サービス(UptimeRobot / BetterStack / Checkly

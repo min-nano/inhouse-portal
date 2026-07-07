@@ -171,11 +171,15 @@ async function checkOrigin(base, mode) {
 async function main() {
   const args = process.argv.slice(2);
   const mode = args.includes("--preview") ? "preview" : "production";
-  const urls = args
-    .filter((a) => a !== "--preview")
-    .flatMap((a) => a.split(","))
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const urls = [
+    ...new Set(
+      args
+        .filter((a) => a !== "--preview")
+        .flatMap((a) => a.split(","))
+        .map((s) => s.trim().replace(/\/+$/, ""))
+        .filter(Boolean),
+    ),
+  ];
 
   if (urls.length === 0) {
     console.error(

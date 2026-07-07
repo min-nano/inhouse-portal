@@ -214,7 +214,10 @@ typecheck → test → フロントビルド → Pages Functions バンドル検
   (`/api/apps`→401, `/`→302→login, `/api/proxy/:id`→401)。対象はリポジトリ変数
   `SMOKE_BASE_URLS`(カンマ区切り)。
 - **プレビュー**(ブランチ/PR デプロイ): 前段の Cloudflare Access でホスト全体が
-  ゲートされるため、`environment_url` に対し「未認証で `200` を返さない=公開されて
-  いない」ことを検証。
+  ゲートされるため「未認証で `200` を返さない=公開されていない」ことを検証。
 
-詳細は [docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。
+デプロイ毎に変わるユニークURL(`<hash>.<project>.pages.dev`)とブランチエイリアスは
+`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API を commit SHA で引いて検査対象に追加する
+(Secrets `CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。未設定でも
+`environment_url` / `SMOKE_BASE_URLS` にフォールバック)。詳細は
+[docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。
