@@ -5,11 +5,20 @@ on:
     branches: ["**"]
   pull_request:
 
+# code-quality: write はカバレッジレポートのアップロードに必要。
+permissions:
+  contents: read
+  code-quality: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # マージコミットではなくPR head commitをチェックアウトし、
+          # カバレッジの行番号が差分に正しく対応するようにする。
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -22,8 +31,22 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      # アップロードは (1) 同一リポジトリからのPR (PR番号を持つ) または
+      # (2) デフォルトブランチ main へのpush (ベースライン確立) のみ。
+      # feature ブランチへの push では PR番号が無くアップロードが HTTP 400 で
+      # 失敗するためスキップする (fork PR も secrets が無いためスキップ)。
+      - name: Upload coverage report
+        if: >-
+          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest
 
       - name: Build (frontend)
         run: npm run build
