@@ -246,6 +246,22 @@ describe("_middleware 署名検証モード (CF_ACCESS_TEAM_DOMAIN 設定時)", 
     expect(next).not.toHaveBeenCalled();
   });
 
+  it("pages.dev + 正当なトークンでも aud 未設定ならスルーしない(両方必須)", async () => {
+    stubJwks();
+    const { context, next } = makeContext(
+      new Request("https://preview.inhouse-portal.pages.dev/", {
+        headers: {
+          accept: "text/html",
+          "Cf-Access-Jwt-Assertion": await token(),
+        },
+      }),
+      { CF_ACCESS_TEAM_DOMAIN: TEAM, AUTH_SECRET: "s" }, // CF_ACCESS_AUD 未設定
+    );
+    const res = await onRequest(context);
+    expect(res.status).toBe(302);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("カスタムドメインは正当なトークンでもスルーしない(pages.dev限定)", async () => {
     stubJwks();
     const { context, next } = makeContext(

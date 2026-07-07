@@ -17,13 +17,15 @@
  * 無いため、ランタイムで使える2つの手掛かりを組み合わせる:
  *   - ホスト名: プレビューは `*.pages.dev`、本番はカスタムドメイン
  *   - Cloudflare Access が前段にいると全リクエストに付く `Cf-Access-Jwt-Assertion`
- * `*.pages.dev` かつ Access アサーションがあれば「Access 保護済み」として Function
- * 認証をスルーする。カスタムドメインでは(ヘッダ偽装があっても)常に OAuth を要求し、
- * Access 無しの pages.dev はヘッダが無いので OAuth にフォールバックする(fail-closed)。
+ * バイパス(Function 認証のスルー)は次を **すべて** 満たすときだけ:
+ *   1. ホストが `*.pages.dev`
+ *   2. `CF_ACCESS_TEAM_DOMAIN` と `CF_ACCESS_AUD` の両方が設定されている
+ *   3. `Cf-Access-Jwt-Assertion` の **RS256 署名検証**(iss/aud/exp)が通る
+ * これ以外(カスタムドメイン / team domain・aud 未設定 / 検証失敗)は必ず OAuth を要求する。
  *
- * CF_ACCESS_TEAM_DOMAIN を設定すると、アサーションを **RS256 署名検証**(iss/aud/exp)
- * してからスルーする。これにより Access 未適用の pages.dev でのヘッダ偽装も弾ける。
- * 未設定時は presence チェック(ヘッダの有無のみ)にフォールバックする。
+ * 本番環境には team domain・aud を設定しない運用にすることで、本番の pages.dev
+ * エイリアスにヘッダを偽装してアクセスされても、条件2で確実にゲートされる(fail-closed)。
+ * バイパスの唯一の道が「正当な署名付き Access トークン」になるため、偽装は暗号的に不可能。
  */
 import type { Env } from "../src/server/app";
 import { verifyAccessJwt } from "../src/server/auth/cf-access";
@@ -48,24 +50,22 @@ export async function onRequest(
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // 環境判定: pages.dev 上で Cloudflare Access のアサーションが付いていれば、
-  // Access が edge で保護済みなので Function 認証はスルーする。バイパスは pages.dev
-  // ホスト限定なので、本番カスタムドメインは(ヘッダ偽装があっても)常に OAuth を要求。
+  // 環境判定: pages.dev 上で、team domain と aud の両方が設定され、かつ Access
+  // トークンの署名検証が通ったときだけ Function 認証をスルーする。team domain/aud を
+  // 設定しない本番では(pages.dev エイリアスにヘッダを偽装されても)ここを通らず、
+  // 常に OAuth を要求する。カスタムドメインはホスト条件で最初から対象外。
   const accessToken = request.headers.get("Cf-Access-Jwt-Assertion");
-  if (url.hostname.endsWith(".pages.dev") && accessToken) {
-    const teamDomain = env.CF_ACCESS_TEAM_DOMAIN;
-    if (teamDomain) {
-      // 厳密モード: 署名検証が通ったときだけスルー(偽装は弾いて OAuth へ)
-      const identity = await verifyAccessJwt(accessToken, {
-        teamDomain,
-        aud: env.CF_ACCESS_AUD,
-      });
-      if (identity) return next();
-    } else {
-      // 暫定モード: presence チェックのみ(署名検証を有効にするには
-      // CF_ACCESS_TEAM_DOMAIN を設定する)
-      return next();
-    }
+  const teamDomain = env.CF_ACCESS_TEAM_DOMAIN;
+  const aud = env.CF_ACCESS_AUD;
+  if (
+    url.hostname.endsWith(".pages.dev") &&
+    accessToken &&
+    teamDomain &&
+    aud
+  ) {
+    const identity = await verifyAccessJwt(accessToken, { teamDomain, aud });
+    if (identity) return next();
+    // 検証失敗はバイパスせず OAuth へ(fail-closed)
   }
 
   if (PUBLIC_PATHS.has(url.pathname)) return next();

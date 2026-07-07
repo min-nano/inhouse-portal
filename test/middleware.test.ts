@@ -80,15 +80,19 @@ describe("_middleware auth gate", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("pages.dev + Access アサーションはスルー(Access保護済み、secret不要)", async () => {
+  it("pages.dev + Accessヘッダでも team domain/aud 未設定ならスルーしない(本番pages.devエイリアスの偽装対策)", async () => {
     const { context, next } = makeContext(
-      new Request("https://preview-branch.inhouse-portal.pages.dev/", {
-        headers: { accept: "text/html", "Cf-Access-Jwt-Assertion": "jwt" },
+      new Request("https://inhouse-portal.pages.dev/", {
+        headers: { accept: "text/html", "Cf-Access-Jwt-Assertion": "forged" },
       }),
+      { AUTH_SECRET: SECRET },
     );
     const res = await onRequest(context);
-    expect(res).toBe(NEXT);
-    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get("location")!).pathname).toBe(
+      "/api/auth/login",
+    );
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("Access アサーション無しの pages.dev は OAuth にフォールバック", async () => {
