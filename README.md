@@ -210,14 +210,14 @@ typecheck → test → フロントビルド → Pages Functions バンドル検
 未認証アクセスが弾かれること、および **Zero Trust を装った偽装 `Cf-Access-*` ヘッダでも
 素通りしないこと** を確認する。本番とプレビューで認証モデルが違うため2モードで実行する:
 
-- **本番**(`environment` = production): カスタムドメイン等を厳密なステータスで検証
-  (`/api/apps`→401, `/`→302→login, `/api/proxy/:id`→401)。対象はリポジトリ変数
-  `SMOKE_BASE_URLS`(カンマ区切り)。
+- **本番**(`environment` = production): 固定ドメイン等を厳密なステータスで検証
+  (`/api/apps`→401, `/`→302→login, `/api/proxy/:id`→401)。
 - **プレビュー**(ブランチ/PR デプロイ): 前段の Cloudflare Access でホスト全体が
   ゲートされるため「未認証で `200` を返さない=公開されていない」ことを検証。
 
-デプロイ毎に変わるユニークURL(`<hash>.<project>.pages.dev`)とブランチエイリアスは
-`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API を commit SHA で引いて検査対象に追加する
-(Secrets `CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。未設定でも
-`environment_url` / `SMOKE_BASE_URLS` にフォールバック)。詳細は
+検査対象URL(本番の固定ドメイン、デプロイ毎のユニークURL、ブランチエイリアス)は
+`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API から解決する(本番の固定ドメインは
+Project の `domains`/`subdomain`、デプロイ毎のURLは Deployment を commit SHA で特定)。
+Secrets `CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。未設定でも
+`environment_url` / 変数 `SMOKE_BASE_URLS` にフォールバックする。詳細は
 [docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。

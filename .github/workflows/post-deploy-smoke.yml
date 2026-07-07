@@ -43,8 +43,8 @@ jobs:
       - name: Resolve target and mode
         id: target
         env:
-          # 本番の固定検査対象(カスタムドメイン + pages.dev サブドメイン)。
-          # Settings → Secrets and variables → Actions → Variables。
+          # 本番の固定検査対象。通常は Cloudflare API(Project の domains)から取得するので
+          # 設定不要。API を使わない/補助したい場合のみ Variables に設定する。
           SMOKE_BASE_URLS: ${{ vars.SMOKE_BASE_URLS }}
           DISPATCH_URLS: ${{ github.event.inputs.urls }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}

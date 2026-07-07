@@ -342,35 +342,37 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
   それ以外(preview / ブランチ名)は ② preview モードで検査する。
 - **手動**: `workflow_dispatch`(`urls` と `mode` を上書き可)。
 
-**検査対象URLの解決**: 3系統のURLを組み合わせて検査する。
+**検査対象URLの解決**: 検査対象は原則すべて Cloudflare Pages API から取得する
+([`scripts/cf-deploy-urls.mjs`](../scripts/cf-deploy-urls.mjs))。手入力の変数維持は不要。
 
-| 種類 | 例 | 取得元 |
+| 種類 | 例 | 取得元(API) |
 |---|---|---|
-| カスタムドメイン | `portal.example.co.jp` | 変数 `SMOKE_BASE_URLS`(手入力) |
-| 本番固定 pages.dev | `inhouse-portal.pages.dev` | 変数 `SMOKE_BASE_URLS`(手入力) |
-| デプロイ毎のユニークURL / ブランチエイリアス | `<hash>.<project>.pages.dev` / `<branch>.<project>.pages.dev` | Cloudflare Pages API を commit SHA で解決([`scripts/cf-deploy-urls.mjs`](../scripts/cf-deploy-urls.mjs)) |
+| カスタムドメイン | `portal.example.co.jp` | Project の `domains`(production時) |
+| 本番固定 pages.dev | `inhouse-portal.pages.dev` | Project の `domains` / `subdomain`(production時) |
+| デプロイ毎のユニークURL / ブランチエイリアス | `<hash>.<project>.pages.dev` / `<branch>.<project>.pages.dev` | Deployment の `url` / `aliases` を commit SHA で特定 |
 
-固定分(上2つ)はリポジトリ変数(Settings → Secrets and variables → Actions →
-**Variables**)`SMOKE_BASE_URLS` にカンマ区切りで入れる:
+`deployment_status` イベントの `deployment.sha` を使い、production では **Project API の
+固定ドメイン + そのデプロイのユニークURL**、preview では **そのデプロイのユニークURL /
+ブランチエイリアス** を解決する。使う API:
 
-```
-SMOKE_BASE_URLS = https://portal.example.co.jp,https://inhouse-portal.pages.dev
-```
+- `GET /accounts/{account}/pages/projects/{project}` → `domains` / `subdomain`(固定ドメイン)
+- `GET /accounts/{account}/pages/projects/{project}/deployments?env={production|preview}`
+  → 各デプロイの `url` / `aliases` を `deployment_trigger.metadata.commit_hash` で突き合わせ
 
-デプロイ毎に変わるユニークURL/エイリアスは固定値にできないため、`deployment_status`
-イベントの `deployment.sha` で当該デプロイを Cloudflare Pages API から特定して取得する。
 このために **GitHub Secrets** を設定する(Actions → Secrets):
 
 - `CLOUDFLARE_API_TOKEN` … `Account → Cloudflare Pages → Read`(既存の Pages:Edit トークンでも可)
 - `CLOUDFLARE_ACCOUNT_ID` … 対象アカウントID
 - (任意)変数 `CF_PAGES_PROJECT` … プロジェクト名。既定 `inhouse-portal`
 
-API解決は **失敗しても本命のスモークは落とさない**(トークン未設定・該当なし等は
-空を返してフォールバック)。Secrets 未設定でも、preview は `environment_url`、production は
-`SMOKE_BASE_URLS` で最低限の検査は動く。API を使う API エンドポイントは
-`GET /accounts/{account}/pages/projects/{project}/deployments?env={production|preview}`
-で、各デプロイの `url` と `aliases` を commit SHA(`deployment_trigger.metadata.commit_hash`)
-で突き合わせて解決する。
+API解決は **失敗しても本命のスモークは落とさない**(トークン未設定・API失敗・該当なしは
+取れた分だけ返し、フォールバックに委ねる)。フォールバックとして、production は変数
+`SMOKE_BASE_URLS`(カンマ区切り)や `environment_url`、preview は `environment_url` を使う。
+API を使わず変数だけで運用したい場合は `SMOKE_BASE_URLS` に固定URLを入れてもよい(任意):
+
+```
+SMOKE_BASE_URLS = https://portal.example.co.jp,https://inhouse-portal.pages.dev
+```
 
 > 継続的なドリフト監視(secret ローテ失敗・環境変数消失など、デプロイ後に認証が壊れる
 > ケース)が必要になったら、外部の常時監視サービス(UptimeRobot / BetterStack / Checkly
