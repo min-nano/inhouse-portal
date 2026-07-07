@@ -138,12 +138,12 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    > (設定漏れで丸ごと公開される事故を防ぐため)。デプロイ前に必ず登録すること。
 
    **プレビュー(PR)デプロイの保護**: プレビューは `*.pages.dev`(Cloudflare 所有
-   ゾーン)上なので **Cloudflare Access を無料で掛けられる**。Preview 環境に
-   `AUTH_MODE=access` を設定すると Function 認証をスルーし Access に委譲する
-   (バイパスは pages.dev ホスト限定なので本番カスタムドメインには影響しない)。
-   ⚠️ `AUTH_MODE=access` を設定する場合は必ず Access ポリシーもセットで掛けること。
-   詳細は [docs/auth-internal.md](docs/auth-internal.md) の
-   「環境ごとの保護方針」を参照。
+   ゾーン)上なので **Cloudflare Access を無料で掛けられる**。Zero Trust → Access で
+   `*.<project>.pages.dev` にポリシーを掛けるだけでよい(**追加の環境変数は不要**)。
+   middleware が「pages.dev + Access アサーションヘッダ ⇒ スルー、カスタムドメイン ⇒
+   常に OAuth、Access 無しの pages.dev ⇒ OAuth にフォールバック(fail-closed)」を
+   ホスト名とヘッダから自動判定する。詳細は
+   [docs/auth-internal.md](docs/auth-internal.md) の「環境ごとの保護方針」を参照。
 
 ### カスタムドメイン (外部サブドメインをCNAMEで割り当てる)
 

@@ -92,7 +92,9 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET
 | `GOOGLE_HOSTED_DOMAIN` | 任意 | 変数 | 同意画面の `hd` ヒント(UX用)。例 `example.co.jp` |
 | `APP_BASE_URL` | 任意 | 変数 | redirect_uri の基点を明示上書き。通常はリクエストから自動導出 |
 | `SESSION_TTL_HOURS` | 任意 | 変数 | セッション有効時間。既定 `168`(7日) |
-| `AUTH_MODE` | 任意 | 変数 | `access` にすると **pages.dev 上で** Function 認証をスルー(Cloudflare Access に委譲)。**Preview 環境にのみ**設定する。詳細は下記 |
+
+> プレビュー(PR)を Cloudflare Access で保護する構成のための**追加変数は不要**。
+> 本番=OAuth / プレビュー=Access の切り替えはリクエストから自動判定する(下記)。
 
 > `ALLOWED_EMAIL_DOMAINS` と `ALLOWED_EMAILS` は分けているが役割は同じ(単に
 > 見通しのため)。どちらにワイルドカードや個別アドレスを書いてもよい。
@@ -176,8 +178,8 @@ ALLOWED_EMAIL_DOMAINS=*@example.co.jp
 
 | 環境 | ホスト | 保護 | 設定 |
 |---|---|---|---|
-| 本番 | カスタムドメイン(外部DNS) | 内製 OAuth | `AUTH_MODE` 未設定(既定) |
-| プレビュー(PR) | `*.pages.dev` | Cloudflare Access | `AUTH_MODE=access`(Preview環境) |
+| 本番 | カスタムドメイン(外部DNS) | 内製 OAuth | 追加設定なし(既定で OAuth) |
+| プレビュー(PR) | `*.pages.dev` | Cloudflare Access | Access ポリシーを掛けるだけ(変数不要) |
 | ローカル | `localhost:8788` | 内製 OAuth | `.dev.vars` |
 
 なぜプレビューで OAuth を使わないか: OAuth の `redirect_uri` は **完全一致で事前登録が
@@ -186,36 +188,59 @@ ALLOWED_EMAIL_DOMAINS=*@example.co.jp
 Cloudflare 所有ゾーンなので Access を無料で掛けられる。よってプレビューは Access に任せ、
 Function 側の認証はスルーする。
 
-### プレビューの設定手順
+### 本番/プレビューの判定は自動(追加変数なし)
 
-1. **Preview 環境の変数に `AUTH_MODE=access` を設定**(Pages の Settings →
-   Environment variables の **Preview** タブ。Production には設定しないこと)。
-   - これで pages.dev 上のプレビューは Function 認証をスルーする。
-   - 誤設定対策として、**バイパスは `*.pages.dev` ホストに限定**している。仮に
-     `AUTH_MODE=access` が Production に紛れ込んでも、カスタムドメイン上では常に
-     OAuth を要求する(fail-safe)。
-2. **Cloudflare Access でプレビューを保護**: Zero Trust → Access → Applications で
-   Self-hosted アプリを作り、対象ホストに `*.<project>.pages.dev`(またはプレビュー用
-   サブドメイン)を指定し、社内メールドメイン + 協力者のポリシーを設定する。
-   - ⚠️ **`AUTH_MODE=access` を設定したのに Access ポリシーを掛けていないと、
-     プレビューが無認証で全公開になる**(ポータル一覧 + GASプロキシが露出)。
-     必ずセットで設定すること。
-3. ヘッダ表示: Access 保護下では Access が `Cf-Access-Authenticated-User-Email` を
+Pages の組み込み変数(`CF_PAGES_BRANCH` / `CF_PAGES_URL` 等)は **ビルド時にしか
+存在せず、Functions のランタイム `env` には入らない**。そのため middleware では
+それらを読めない。代わりに、ランタイムで確実に得られる2つの手掛かりで自動判定する:
+
+- **ホスト名**: プレビューは `*.pages.dev`、本番はカスタムドメイン。
+- **`Cf-Access-Jwt-Assertion` ヘッダ**: Cloudflare Access が前段にいると全リクエスト
+  (静的アセット含む)に注入される。
+
+判定ロジック(`functions/_middleware.ts`):
+
+| ホスト | Access アサーション | 挙動 |
+|---|---|---|
+| `*.pages.dev` | あり | **スルー**(Access 保護済み ⇒ プレビュー) |
+| `*.pages.dev` | なし | OAuth を要求(Access 未設定 ⇒ fail-closed) |
+| カスタムドメイン | あり/なし | **常に OAuth**(バイパスは pages.dev 限定。ヘッダ偽装無効) |
+
+この設計の安全性:
+- **本番カスタムドメインは絶対にバイパスしない**。`Cf-Access-Jwt-Assertion` を偽装
+  されても、バイパス条件が「pages.dev ホストであること」なので効かない。
+- **Access 未設定の pages.dev は自動で fail-closed**(OAuth へフォールバック)。
+  `AUTH_MODE` のような明示フラグが無くても、「フラグだけ立てて Access 掛け忘れ ⇒
+  全公開」という事故が起きない。
+
+### プレビューの設定手順(Access を掛けるだけ)
+
+1. **Cloudflare Access でプレビューを保護**: Zero Trust → Access → Applications で
+   Self-hosted アプリを作り、対象ホストに `*.<project>.pages.dev`(必要なら本番
+   エイリアス `<project>.pages.dev` も)を指定し、社内メールドメイン + 協力者の
+   ポリシーを設定する。→ これだけでプレビューは Access 保護 + Function スルーになる。
+2. ヘッダ表示: Access 保護下では Access が `Cf-Access-Authenticated-User-Email` を
    注入するので、`/api/me` はそのメールを返し画面ヘッダに表示される。
 
-> **本番の `<project>.pages.dev` URL について**: 本番デプロイは Production 環境の変数
-> (`AUTH_MODE` 未設定)で動くため、その pages.dev URL でも OAuth を要求する
-> (redirect 未登録なら単にログインできないだけで、露出はしない)。利用は
-> カスタムドメインで行う。
+> **本番の `<project>.pages.dev` エイリアスについて**: このホストに Access を掛ければ
+> Access 保護(スルー)、掛けなければ OAuth 要求(fail-closed)になる。どちらでも
+> 露出しない。通常の利用はカスタムドメインで行う。
+>
+> **残存リスク(軽微)**: Access を掛けていない pages.dev ホストに対して
+> `Cf-Access-Jwt-Assertion` を偽装したリクエストを送られると、ヘッダ存在チェックだけ
+> ではバイパスされうる(Access を掛けている間は Cloudflare が偽装ヘッダを除去するため
+> 無効)。より厳密にするなら、middleware で Access JWT の署名検証(トークンの `iss` から
+> チーム JWKS を取得し、`aud` をアプリの AUD タグで固定)を追加する。この場合は
+> チームドメイン/AUD の設定が要る。
 
 ### プレビューでも OAuth を通したい場合(任意)
 
 Access を使わず特定のプレビューで OAuth を検証したいなら、ハッシュURLではなく
 **ブランチ固定エイリアス** `https://<正規化ブランチ名>.<project>.pages.dev`
 (Pages ダッシュボードの各デプロイ「Branch alias」で確認)を使い、その callback を
-Google に登録し、Preview 環境に OAuth 用 secret を設定する(`AUTH_MODE` は設定しない)。
-ブランチ名ごとに Google 登録が要るため、長命の `staging` ブランチ運用が実用的。
-なお **OAuth フローそのものの動作確認はローカル実行が最短**なので、通常はそれで足りる。
+Google に登録し、Preview 環境に OAuth 用 secret を設定する。ブランチ名ごとに Google
+登録が要るため、長命の `staging` ブランチ運用が実用的。なお **OAuth フローそのものの
+動作確認はローカル実行が最短**なので、通常はそれで足りる。
 
 ## セキュリティ上の要点
 

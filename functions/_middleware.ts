@@ -12,10 +12,14 @@
  * - /api/auth/* と /api/health は認証不要(ログイン導線・死活監視)
  *
  * プレビュー(PR)デプロイは Cloudflare Access で保護できる(pages.dev は
- * Cloudflare 所有ゾーンなので Access が無料で効く)。その環境では
- * AUTH_MODE=access を設定して Function 側の認証をスルーする。ただし誤って本番の
- * カスタムドメインが素通しにならないよう、**バイパスは pages.dev ホストに限定**する
- * (カスタムドメインでは常に OAuth を要求 = fail-safe)。
+ * Cloudflare 所有ゾーンなので Access が無料で効く)。本番/プレビューの判定は
+ * **追加の環境変数なし**で行う。Pages の CF_PAGES_* はビルド時変数でランタイムには
+ * 無いため、ランタイムで使える2つの手掛かりを組み合わせる:
+ *   - ホスト名: プレビューは `*.pages.dev`、本番はカスタムドメイン
+ *   - Cloudflare Access が前段にいると全リクエストに付く `Cf-Access-Jwt-Assertion`
+ * `*.pages.dev` かつ Access アサーションがあれば「Access 保護済み」として Function
+ * 認証をスルーする。カスタムドメインでは(ヘッダ偽装があっても)常に OAuth を要求し、
+ * Access 無しの pages.dev はヘッダが無いので OAuth にフォールバックする(fail-closed)。
  */
 import type { Env } from "../src/server/app";
 import { getSessionFromRequest } from "../src/server/auth/session";
@@ -39,11 +43,14 @@ export async function onRequest(
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // プレビュー(pages.dev)は Cloudflare Access が edge で保護する前提でスルー。
-  // カスタムドメイン(本番)では AUTH_MODE の値によらず OAuth を要求する。
-  if (env.AUTH_MODE === "access" && url.hostname.endsWith(".pages.dev")) {
-    return next();
-  }
+  // 追加変数なしの環境判定: pages.dev 上で Cloudflare Access のアサーションが
+  // 付いていれば、Access が edge で保護済みなので Function 認証はスルーする。
+  // バイパスは pages.dev ホスト限定なので、本番カスタムドメインは(ヘッダ偽装が
+  // あっても)常に OAuth を要求する。
+  const behindAccess =
+    url.hostname.endsWith(".pages.dev") &&
+    request.headers.has("Cf-Access-Jwt-Assertion");
+  if (behindAccess) return next();
 
   if (PUBLIC_PATHS.has(url.pathname)) return next();
 

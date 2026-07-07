@@ -80,24 +80,38 @@ describe("_middleware auth gate", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("AUTH_MODE=access + pages.dev はスルー(Access保護前提、secret不要)", async () => {
+  it("pages.dev + Access アサーションはスルー(Access保護済み、secret不要)", async () => {
     const { context, next } = makeContext(
       new Request("https://preview-branch.inhouse-portal.pages.dev/", {
-        headers: { accept: "text/html" },
+        headers: { accept: "text/html", "Cf-Access-Jwt-Assertion": "jwt" },
       }),
-      { AUTH_MODE: "access" },
     );
     const res = await onRequest(context);
     expect(res).toBe(NEXT);
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it("AUTH_MODE=access でもカスタムドメインでは OAuth を要求(fail-safe)", async () => {
+  it("Access アサーション無しの pages.dev は OAuth にフォールバック", async () => {
+    const { context, next } = makeContext(
+      new Request("https://preview-branch.inhouse-portal.pages.dev/", {
+        headers: { accept: "text/html" },
+      }),
+      { AUTH_SECRET: SECRET },
+    );
+    const res = await onRequest(context);
+    expect(res.status).toBe(302);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("カスタムドメインは Access ヘッダが偽装されても OAuth を要求(fail-safe)", async () => {
     const { context, next } = makeContext(
       new Request("https://portal.example.co.jp/api/apps", {
-        headers: { accept: "application/json" },
+        headers: {
+          accept: "application/json",
+          "Cf-Access-Jwt-Assertion": "forged",
+        },
       }),
-      { AUTH_MODE: "access", AUTH_SECRET: SECRET },
+      { AUTH_SECRET: SECRET },
     );
     const res = await onRequest(context);
     expect(res.status).toBe(401);

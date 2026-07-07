@@ -35,12 +35,6 @@ export type Env = {
   GOOGLE_HOSTED_DOMAIN?: string;
   /** セッション/state 署名用のHMAC鍵。ローテートで全セッション失効 */
   AUTH_SECRET?: string;
-  /**
-   * "access": Cloudflare Access が edge で保護している前提で Function 側の認証を
-   * スルーする(プレビュー用)。誤設定対策として `*.pages.dev` ホストでのみ有効。
-   * 既定(未設定): OAuth 認証を要求。
-   */
-  AUTH_MODE?: string;
   /** リダイレクトURIの基点を明示上書きしたい場合(通常はリクエストから自動導出) */
   APP_BASE_URL?: string;
   /** セッションTTL(時間)。既定7日 */
