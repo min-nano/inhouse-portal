@@ -205,19 +205,20 @@ typecheck → test → フロントビルド → Pages Functions バンドル検
 ## デプロイ後の認証チェック
 
 デプロイのたびに「認証が本当にかかっているか」を外形で自動検証する。
-`.github/workflows/post-deploy-smoke.yml` が Cloudflare Pages のデプロイ完了
-(`deployment_status`)で発火し、`scripts/smoke.mjs` が対象URLへ実際にアクセスして
+`.github/workflows/post-deploy-smoke.yml` が `scripts/smoke.mjs` で対象URLへ実際にアクセスし、
 未認証アクセスが弾かれること、および **Zero Trust を装った偽装 `Cf-Access-*` ヘッダでも
 素通りしないこと** を確認する。本番とプレビューで認証モデルが違うため2モードで実行する:
 
-- **本番**(`environment` = production): 固定ドメイン等を厳密なステータスで検証
+- **本番**(production): 固定ドメイン等を厳密なステータスで検証
   (`/api/apps`→401, `/`→302→login, `/api/proxy/:id`→401)。
 - **プレビュー**(ブランチ/PR デプロイ): 前段の Cloudflare Access でホスト全体が
   ゲートされるため「未認証で `200` を返さない=公開されていない」ことを検証。
 
+**トリガー**: `wrangler pages deploy`(Direct Upload)は GitHub Deployment を作らず
+`deployment_status` が飛ばないため、**Cloudflare Notifications(デプロイ成功)→ GAS 中継
+(`tools/cf-deploy-relay.gs`)→ GitHub `repository_dispatch`** で発火させる。
+
 検査対象URL(本番の固定ドメイン、デプロイ毎のユニークURL、ブランチエイリアス)は
-`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API から解決する(本番の固定ドメインは
-Project の `domains`/`subdomain`、デプロイ毎のURLは Deployment を commit SHA で特定)。
-Secrets `CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。未設定でも
-`environment_url` / 変数 `SMOKE_BASE_URLS` にフォールバックする。詳細は
-[docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。
+`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API から解決する。Secrets
+`CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。詳細と中継の
+セットアップ手順は [docs/auth-internal.md](docs/auth-internal.md)・`tools/cf-deploy-relay.gs` を参照。

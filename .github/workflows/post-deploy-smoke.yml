@@ -5,17 +5,21 @@ name: Post-deploy smoke (auth gate)
 # ヘッダでも素通りしないことを確認する。本番とプレビューで認証モデルが違うため
 # scripts/smoke.mjs をモード分けして実行する(本番=厳密ステータス / プレビュー=ブロック確認)。
 #
-# デプロイ毎に変わるユニークURL(<hash>.<project>.pages.dev)とブランチエイリアスは
-# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から commit SHA で解決して検査対象に足す。
+# 検査対象URL(本番固定ドメイン / デプロイ毎のユニークURL / ブランチエイリアス)は
+# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から解決する。
+#
+# トリガー: Cloudflare のデプロイ完了通知を GAS 中継(tools/cf-deploy-relay.gs)で
+# repository_dispatch に変換して発火させる。wrangler direct-upload は GitHub Deployment を
+# 作らず deployment_status が飛ばないため、この中継方式を使う。
 
 on:
-  # Cloudflare Pages のデプロイ完了で発火(本番・プレビュー両方に GitHub Deployment を作る)
-  deployment_status:
+  repository_dispatch:
+    types: [cloudflare-pages-deploy]
   # 手動実行(URL とモードを上書き可能)
   workflow_dispatch:
     inputs:
       urls:
-        description: "検査する base URL(カンマ区切り)。空なら SMOKE_BASE_URLS を使う"
+        description: "検査する base URL(カンマ区切り)。空なら API / SMOKE_BASE_URLS を使う"
         required: false
         default: ""
       mode:
@@ -29,10 +33,6 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    # deployment_status のときは成功時のみ実行する。
-    if: >-
-      github.event_name != 'deployment_status' ||
-      github.event.deployment_status.state == 'success'
     steps:
       - uses: actions/checkout@v4
 
@@ -48,39 +48,38 @@ jobs:
           SMOKE_BASE_URLS: ${{ vars.SMOKE_BASE_URLS }}
           DISPATCH_URLS: ${{ github.event.inputs.urls }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}
+          # repository_dispatch(GAS中継)から渡ってくるモード/SHA/明示URL
+          PAYLOAD_MODE: ${{ github.event.client_payload.mode }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+          PAYLOAD_URL: ${{ github.event.client_payload.url }}
           EVENT: ${{ github.event_name }}
-          DEPLOY_ENV: ${{ github.event.deployment_status.environment }}
-          EVENT_URL: ${{ github.event.deployment_status.environment_url }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
             mode="${DISPATCH_MODE:-production}"
-            if [ "$mode" = "preview" ]; then
-              base="$DISPATCH_URLS"
-            else
-              base="${DISPATCH_URLS:-$SMOKE_BASE_URLS}"
-            fi
+            base="$DISPATCH_URLS"
+            sha=""
           else
-            # deployment_status: environment に "production" を含めば本番、
-            # それ以外(preview / ブランチ名)はプレビュー扱い。
-            case "$(printf '%s' "$DEPLOY_ENV" | tr '[:upper:]' '[:lower:]')" in
-              *production*) mode="production"; base="${SMOKE_BASE_URLS:-$EVENT_URL}" ;;
-              *)            mode="preview";    base="$EVENT_URL" ;;
-            esac
+            # repository_dispatch: 中継が付けたモード(既定 production)と、あれば明示URL/SHA。
+            mode="${PAYLOAD_MODE:-production}"
+            base="$PAYLOAD_URL"
+            sha="$PAYLOAD_SHA"
           fi
+          # 本番で base が空なら SMOKE_BASE_URLS をフォールバックに足す(任意設定)。
+          if [ "$mode" = "production" ] && [ -z "$base" ]; then base="$SMOKE_BASE_URLS"; fi
           # API 解決用の env(Cloudflare の env フィルタは production / preview の2値)
           if [ "$mode" = "production" ]; then cf_env="production"; else cf_env="preview"; fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "cf_env=$cf_env" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Resolve deploy URLs from Cloudflare API
         id: cfurls
-        if: github.event_name == 'deployment_status'
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'inhouse-portal' }}
-          COMMIT_SHA: ${{ github.event.deployment.sha }}
+          COMMIT_SHA: ${{ steps.target.outputs.sha }}
           DEPLOY_ENV: ${{ steps.target.outputs.cf_env }}
         run: |
           # 失敗しても exit 0 で空を返す(本命のスモークは落とさない)。改行→カンマに畳む。
@@ -98,8 +97,8 @@ jobs:
           all="$(printf '%s,%s' "$BASE_URLS" "$API_URLS" | sed 's/^,//; s/,$//')"
           if [ -z "$all" ] || [ "$all" = "," ]; then
             echo "検査対象URLが1件も解決できませんでした。" >&2
-            echo "本番は変数 SMOKE_BASE_URLS を、プレビューは Cloudflare API 用の Secrets" >&2
-            echo "(CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)を設定してください。" >&2
+            echo "Cloudflare API 用の Secrets(CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)、" >&2
+            echo "または変数 SMOKE_BASE_URLS を設定してください。" >&2
             exit 2
           fi
           echo "検査モード: $MODE / 対象: $all"

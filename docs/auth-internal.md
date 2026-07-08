@@ -337,10 +337,19 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 偽トークンを弾くこと)も併せて確認する。
 
 **トリガー**(cron は付けない):
-- **デプロイ完了**: Cloudflare Pages が発行する GitHub Deployment の `deployment_status`
-  (success)で発火。`environment` に `production` を含めば ① production モード、
-  それ以外(preview / ブランチ名)は ② preview モードで検査する。
+- **デプロイ完了**: `repository_dispatch`(type `cloudflare-pages-deploy`)で発火。
+  中継が付ける `client_payload.mode`(既定 `production`)で ①/② を切り替える。
 - **手動**: `workflow_dispatch`(`urls` と `mode` を上書き可)。
+
+> ⚠️ **なぜ `deployment_status` ではなく `repository_dispatch` か**: このプロジェクトは
+> `wrangler pages deploy`(Direct Upload)でデプロイするため、Cloudflare は GitHub の
+> Deployment を作らず `deployment_status` イベントが飛ばない(実際 `/deployments` は空)。
+> そこで **Cloudflare Notifications(Pages デプロイ成功)→ GAS 中継
+> ([`tools/cf-deploy-relay.gs`](../tools/cf-deploy-relay.gs))→ GitHub `repository_dispatch`**
+> という経路で発火させる。GitHub の起動口は認証必須で、Cloudflare の通知 Webhook は
+> payload/ヘッダが固定のため直結できず、トークンを持てる中継が要る。GAS は `doPost` で
+> ヘッダを読めないので、共有シークレットは Webhook URL の **クエリ文字列 `?key=`** で渡す。
+> セットアップ手順は `tools/cf-deploy-relay.gs` の冒頭コメント参照。
 
 **検査対象URLの解決**: 検査対象は原則すべて Cloudflare Pages API から取得する
 ([`scripts/cf-deploy-urls.mjs`](../scripts/cf-deploy-urls.mjs))。手入力の変数維持は不要。
@@ -351,9 +360,9 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 | 本番固定 pages.dev | `inhouse-portal.pages.dev` | Project の `domains` / `subdomain`(production時) |
 | デプロイ毎のユニークURL / ブランチエイリアス | `<hash>.<project>.pages.dev` / `<branch>.<project>.pages.dev` | Deployment の `url` / `aliases` を commit SHA で特定 |
 
-`deployment_status` イベントの `deployment.sha` を使い、production では **Project API の
-固定ドメイン + そのデプロイのユニークURL**、preview では **そのデプロイのユニークURL /
-ブランチエイリアス** を解決する。使う API:
+production では **Project API の固定ドメイン + 最新(または SHA一致)デプロイのユニークURL**、
+preview では **最新デプロイのユニークURL / ブランチエイリアス** を解決する。`repository_dispatch`
+経由で SHA が渡らない場合は、そのモードの **最新の成功デプロイ**を対象にする。使う API:
 
 - `GET /accounts/{account}/pages/projects/{project}` → `domains` / `subdomain`(固定ドメイン)
 - `GET /accounts/{account}/pages/projects/{project}/deployments?env={production|preview}`

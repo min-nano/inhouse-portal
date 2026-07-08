@@ -15,7 +15,7 @@
  *   CF_API_TOKEN     … Cloudflare API トークン(Account → Cloudflare Pages → Read)
  *   CF_ACCOUNT_ID    … アカウントID
  *   CF_PAGES_PROJECT … Pages プロジェクト名(例: inhouse-portal)
- *   COMMIT_SHA       … 対象デプロイの commit SHA(deployment.sha)
+ *   COMMIT_SHA       … (任意)対象デプロイの commit SHA。空なら最新の成功デプロイを使う
  *   DEPLOY_ENV       … "production" | "preview"
  *   CF_API_BASE      … (任意)APIベースURL上書き。テスト用
  *
@@ -56,7 +56,11 @@ async function resolveProjectDomains(base, account, project, token) {
   return out;
 }
 
-/** そのデプロイの url + aliases(SHA一致で特定) */
+/**
+ * そのデプロイの url + aliases。
+ * - SHA 指定あり: commit_hash 一致で特定(deployment_status 由来など)。
+ * - SHA 指定なし: 最新の成功デプロイ(repository_dispatch 由来など。API は新しい順)。
+ */
 async function resolveDeploymentUrls(base, account, project, token, env, sha) {
   const url =
     `${base}/accounts/${account}/pages/projects/${project}` +
@@ -64,15 +68,27 @@ async function resolveDeploymentUrls(base, account, project, token, env, sha) {
   const body = await fetchJson(url, token);
   const list = Array.isArray(body?.result) ? body.result : [];
   const commitOf = (d) => d?.deployment_trigger?.metadata?.commit_hash ?? "";
-  let match = list.find((d) => commitOf(d) === sha);
-  if (!match) {
-    match = list.find(
-      (d) => commitOf(d).startsWith(sha) || sha.startsWith(commitOf(d) || "\0"),
-    );
-  }
-  if (!match) {
-    warn(`SHA ${sha} に一致するデプロイが見つからない。`);
-    return [];
+  const succeeded = (d) => d?.latest_stage?.status === "success";
+
+  let match;
+  if (sha) {
+    match = list.find((d) => commitOf(d) === sha);
+    if (!match) {
+      match = list.find(
+        (d) => commitOf(d).startsWith(sha) || sha.startsWith(commitOf(d) || "\0"),
+      );
+    }
+    if (!match) {
+      warn(`SHA ${sha} に一致するデプロイが見つからない。`);
+      return [];
+    }
+  } else {
+    // 最新の成功デプロイ。無ければ先頭(新しい順の1件目)。
+    match = list.find(succeeded) ?? list[0];
+    if (!match) {
+      warn(`env=${env} のデプロイが見つからない。`);
+      return [];
+    }
   }
   const out = [];
   if (typeof match.url === "string") out.push(match.url);
@@ -103,17 +119,13 @@ async function main() {
     }
   }
 
-  // そのデプロイのユニークURL / エイリアスは Deployment API から SHA で特定。
-  if (sha) {
-    try {
-      collected.push(
-        ...(await resolveDeploymentUrls(API_BASE, account, project, token, env, sha)),
-      );
-    } catch (e) {
-      warn(`Deployment API 失敗(デプロイURLをスキップ): ${e.message}`);
-    }
-  } else {
-    warn("COMMIT_SHA が空。デプロイURLの解決をスキップ。");
+  // そのデプロイのユニークURL / エイリアス。SHA があれば一致で特定、無ければ最新。
+  try {
+    collected.push(
+      ...(await resolveDeploymentUrls(API_BASE, account, project, token, env, sha)),
+    );
+  } catch (e) {
+    warn(`Deployment API 失敗(デプロイURLをスキップ): ${e.message}`);
   }
 
   const unique = [...new Set(collected.map(toOrigin).filter(Boolean))];
