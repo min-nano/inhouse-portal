@@ -1,0 +1,110 @@
+name: Post-deploy smoke (auth gate)
+
+# デプロイ後に「認証がかかっていること」を外形で検証する。
+# 未認証アクセスが弾かれること + Zero Trust(Cloudflare Access)を偽装した
+# ヘッダでも素通りしないことを確認する。本番とプレビューで認証モデルが違うため
+# scripts/smoke.mjs をモード分けして実行する(本番=厳密ステータス / プレビュー=ブロック確認)。
+#
+# デプロイ毎に変わるユニークURL(<hash>.<project>.pages.dev)とブランチエイリアスは
+# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から commit SHA で解決して検査対象に足す。
+
+on:
+  # Cloudflare Pages のデプロイ完了で発火(本番・プレビュー両方に GitHub Deployment を作る)
+  deployment_status:
+  # 手動実行(URL とモードを上書き可能)
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "検査する base URL(カンマ区切り)。空なら SMOKE_BASE_URLS を使う"
+        required: false
+        default: ""
+      mode:
+        description: "production / preview"
+        required: false
+        default: "production"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # deployment_status のときは成功時のみ実行する。
+    if: >-
+      github.event_name != 'deployment_status' ||
+      github.event.deployment_status.state == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve target and mode
+        id: target
+        env:
+          # 本番の固定検査対象。通常は Cloudflare API(Project の domains)から取得するので
+          # 設定不要。API を使わない/補助したい場合のみ Variables に設定する。
+          SMOKE_BASE_URLS: ${{ vars.SMOKE_BASE_URLS }}
+          DISPATCH_URLS: ${{ github.event.inputs.urls }}
+          DISPATCH_MODE: ${{ github.event.inputs.mode }}
+          EVENT: ${{ github.event_name }}
+          DEPLOY_ENV: ${{ github.event.deployment_status.environment }}
+          EVENT_URL: ${{ github.event.deployment_status.environment_url }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            mode="${DISPATCH_MODE:-production}"
+            if [ "$mode" = "preview" ]; then
+              base="$DISPATCH_URLS"
+            else
+              base="${DISPATCH_URLS:-$SMOKE_BASE_URLS}"
+            fi
+          else
+            # deployment_status: environment に "production" を含めば本番、
+            # それ以外(preview / ブランチ名)はプレビュー扱い。
+            case "$(printf '%s' "$DEPLOY_ENV" | tr '[:upper:]' '[:lower:]')" in
+              *production*) mode="production"; base="${SMOKE_BASE_URLS:-$EVENT_URL}" ;;
+              *)            mode="preview";    base="$EVENT_URL" ;;
+            esac
+          fi
+          # API 解決用の env(Cloudflare の env フィルタは production / preview の2値)
+          if [ "$mode" = "production" ]; then cf_env="production"; else cf_env="preview"; fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "cf_env=$cf_env" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve deploy URLs from Cloudflare API
+        id: cfurls
+        if: github.event_name == 'deployment_status'
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'inhouse-portal' }}
+          COMMIT_SHA: ${{ github.event.deployment.sha }}
+          DEPLOY_ENV: ${{ steps.target.outputs.cf_env }}
+        run: |
+          # 失敗しても exit 0 で空を返す(本命のスモークは落とさない)。改行→カンマに畳む。
+          resolved="$(node scripts/cf-deploy-urls.mjs || true)"
+          echo "urls=$(printf '%s' "$resolved" | paste -sd, -)" >> "$GITHUB_OUTPUT"
+          [ -n "$resolved" ] && echo "APIで解決したURL: $resolved" || echo "APIからの解決なし(フォールバックを使用)"
+
+      - name: Run smoke test
+        env:
+          MODE: ${{ steps.target.outputs.mode }}
+          BASE_URLS: ${{ steps.target.outputs.base }}
+          API_URLS: ${{ steps.cfurls.outputs.urls }}
+        run: |
+          # 固定分 + API解決分をまとめて渡す(smoke.mjs 側で空要素除去・重複除去)。
+          all="$(printf '%s,%s' "$BASE_URLS" "$API_URLS" | sed 's/^,//; s/,$//')"
+          if [ -z "$all" ] || [ "$all" = "," ]; then
+            echo "検査対象URLが1件も解決できませんでした。" >&2
+            echo "本番は変数 SMOKE_BASE_URLS を、プレビューは Cloudflare API 用の Secrets" >&2
+            echo "(CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)を設定してください。" >&2
+            exit 2
+          fi
+          echo "検査モード: $MODE / 対象: $all"
+          if [ "$MODE" = "preview" ]; then
+            node scripts/smoke.mjs --preview "$all"
+          else
+            node scripts/smoke.mjs "$all"
+          fi
