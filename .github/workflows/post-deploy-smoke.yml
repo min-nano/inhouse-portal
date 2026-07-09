@@ -84,11 +84,14 @@ jobs:
           EVENT: ${{ github.event_name }}
           HEAD_BRANCH: ${{ github.event.check_run.check_suite.head_branch }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
-          # Cloudflare Pages の check run 見出し(例: "Deploying <project> with 🔀 Cloudflare Pages")。
+          # Cloudflare Pages の check run 詳細URL(例:
+          #   https://dash.cloudflare.com/?to=/<account>/pages/view/<project>/<deployment>)。
           # Pages プロジェクト名は GitHub リポジトリ名と一致しないことがある(このリポジトリでは
-          # repo=inhouse-portal だが Pages プロジェクトは min-nano-private)。ここから拾う。
-          CHECK_TITLE: ${{ github.event.check_run.output.title }}
-          # 明示指定(最優先)。Cloudflare の文言変更に依存したくない場合に Variables で設定する。
+          # repo=inhouse-portal だが Pages プロジェクトは min-nano-private)。この構造化URLの
+          # /pages/view/<project>/ から拾う。見出し(output.title)は完了時に
+          # "Deployed successfully" へ変わりプロジェクト名が消えるため使わない。
+          CHECK_DETAILS_URL: ${{ github.event.check_run.details_url }}
+          # 明示指定(最優先)。details_url の形式変更に依存したくない場合に Variables で設定する。
           PROJECT_VAR: ${{ vars.CF_PAGES_PROJECT }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
@@ -107,14 +110,14 @@ jobs:
           if [ "$mode" = "production" ]; then cf_env="production"; else cf_env="preview"; fi
           # Pages プロジェクト名を解決する。優先順位:
           #   1) 変数 CF_PAGES_PROJECT(明示・最優先)
-          #   2) check run 見出し "Deploying <project> with ..." から抽出(Cloudflare のデプロイ通知)
+          #   2) check run 詳細URLの /pages/view/<project>/ から抽出(Cloudflare のデプロイ通知)
           # リポジトリ名は既定にしない(実プロジェクト名と異なることがあり、誤った 404 を招くため)。
           project="$PROJECT_VAR"
-          if [ -z "$project" ] && [ -n "$CHECK_TITLE" ]; then
-            project="$(printf '%s' "$CHECK_TITLE" \
-              | sed -n 's/.*Deploying[[:space:]]\{1,\}\(.*\)[[:space:]]\{1,\}with[[:space:]].*/\1/p')"
+          if [ -z "$project" ] && [ -n "$CHECK_DETAILS_URL" ]; then
+            project="$(printf '%s' "$CHECK_DETAILS_URL" \
+              | sed -n 's#.*/pages/view/\([^/?]\{1,\}\).*#\1#p')"
           fi
-          echo "Pages プロジェクト名: '${project:-(未解決)}'(title='${CHECK_TITLE}', 変数=${PROJECT_VAR:-未設定})"
+          echo "Pages プロジェクト名: '${project:-(未解決)}'(details_url='${CHECK_DETAILS_URL}', 変数=${PROJECT_VAR:-未設定})"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "cf_env=$cf_env" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
