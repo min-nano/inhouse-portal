@@ -84,6 +84,12 @@ jobs:
           EVENT: ${{ github.event_name }}
           HEAD_BRANCH: ${{ github.event.check_run.check_suite.head_branch }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          # Cloudflare Pages の check run 見出し(例: "Deploying <project> with 🔀 Cloudflare Pages")。
+          # Pages プロジェクト名は GitHub リポジトリ名と一致しないことがある(このリポジトリでは
+          # repo=inhouse-portal だが Pages プロジェクトは min-nano-private)。ここから拾う。
+          CHECK_TITLE: ${{ github.event.check_run.output.title }}
+          # 明示指定(最優先)。Cloudflare の文言変更に依存したくない場合に Variables で設定する。
+          PROJECT_VAR: ${{ vars.CF_PAGES_PROJECT }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
             mode="${DISPATCH_MODE:-production}"
@@ -99,17 +105,30 @@ jobs:
           if [ "$mode" = "production" ] && [ -z "$base" ]; then base="$SMOKE_BASE_URLS"; fi
           # API 解決用の env(Cloudflare の env フィルタは production / preview の2値)
           if [ "$mode" = "production" ]; then cf_env="production"; else cf_env="preview"; fi
+          # Pages プロジェクト名を解決する。優先順位:
+          #   1) 変数 CF_PAGES_PROJECT(明示・最優先)
+          #   2) check run 見出し "Deploying <project> with ..." から抽出(Cloudflare のデプロイ通知)
+          # リポジトリ名は既定にしない(実プロジェクト名と異なることがあり、誤った 404 を招くため)。
+          project="$PROJECT_VAR"
+          if [ -z "$project" ] && [ -n "$CHECK_TITLE" ]; then
+            project="$(printf '%s' "$CHECK_TITLE" \
+              | sed -n 's/.*Deploying[[:space:]]\{1,\}\(.*\)[[:space:]]\{1,\}with[[:space:]].*/\1/p')"
+          fi
+          echo "Pages プロジェクト名: '${project:-(未解決)}'(title='${CHECK_TITLE}', 変数=${PROJECT_VAR:-未設定})"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "cf_env=$cf_env" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "project=$project" >> "$GITHUB_OUTPUT"
 
       - name: Resolve deploy URLs from Cloudflare API
         id: cfurls
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'inhouse-portal' }}
+          # プロジェクト名は Resolve target and mode で解決済み(変数 or check run 見出し)。
+          # 空なら cf-deploy-urls.mjs 側で解決をスキップし、フォールバックに委ねる。
+          CF_PAGES_PROJECT: ${{ steps.target.outputs.project }}
           COMMIT_SHA: ${{ steps.target.outputs.sha }}
           DEPLOY_ENV: ${{ steps.target.outputs.cf_env }}
         run: |
