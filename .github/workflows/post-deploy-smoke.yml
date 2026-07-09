@@ -30,6 +30,10 @@ on:
 
 permissions:
   contents: read
+  # 検査結果を「トリガー元ブランチのコミット」に commit status として投稿するのに必要。
+  # (check_run 起動のこの実行自体は main の実行として扱われ、その check run は main の
+  #  コミットに付くため、ブランチ/PR のチェック欄には出ない。head_sha へ明示投稿する。)
+  statuses: write
 
 # 本番デプロイの検査は最新1本だけ走れば十分(古い実行はキャンセル)。
 concurrency:
@@ -51,6 +55,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # 検査開始をブランチのコミットへ pending として通知(チェック欄に「実行中」を出す)。
+      - name: Post pending status to branch commit
+        if: github.event_name == 'check_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.check_run.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -nc --arg u "$RUN_URL" \
+            '{state:"pending",context:"auth-smoke",description:"認証チェックを実行中",target_url:$u}' \
+          | curl -sS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" -d @- >/dev/null
 
       - name: Resolve target and mode
         id: target
@@ -119,3 +138,24 @@ jobs:
           else
             node scripts/smoke.mjs "$all"
           fi
+
+      # 検査結果をブランチのコミットへ commit status として投稿(PR/ブランチのチェック欄に表示)。
+      - name: Post result status to branch commit
+        if: always() && github.event_name == 'check_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.check_run.head_sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$JOB_STATUS" in
+            success) state=success; desc="認証チェック合格" ;;
+            failure) state=failure; desc="認証チェック不合格" ;;
+            *)       state=error;   desc="認証チェック中断 ($JOB_STATUS)" ;;
+          esac
+          jq -nc --arg s "$state" --arg d "$desc" --arg u "$RUN_URL" \
+            '{state:$s,context:"auth-smoke",description:$d,target_url:$u}' \
+          | curl -sS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" -d @- >/dev/null

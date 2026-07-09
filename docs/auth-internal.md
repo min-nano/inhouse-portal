@@ -345,6 +345,13 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
   それ以外は ② preview。対象デプロイは `check_run.head_sha` で特定する。
 - **手動**: `workflow_dispatch`(`urls` と `mode` を上書き可)。
 
+**結果の表示先(重要)**: `check_run` で起動したこの実行は **main の実行**として扱われ、
+ジョブの check run は main のコミットに付く。そのままではトリガー元のブランチ/PR の
+チェック欄に出ないため、検査結果を **`check_run.head_sha`(= そのブランチのコミット)へ
+commit status `auth-smoke`** として投稿する(開始時 `pending` → 終了時 `success`/`failure`)。
+これで各ブランチ/PR のチェック欄に表示され、ブランチ保護の必須チェックにも指定できる
+(`permissions: statuses: write` と `GITHUB_TOKEN` を使用)。
+
 > ⚠️ **なぜ `check_run` か(`deployment_status` ではない理由)**: このプロジェクトは
 > `wrangler pages deploy`(Direct Upload)でデプロイするため、Cloudflare は GitHub の
 > **Deployments API を使わず**、`deployment_status` イベントは飛ばない(`/deployments` は空)。
