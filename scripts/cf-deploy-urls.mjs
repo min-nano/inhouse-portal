@@ -41,7 +41,34 @@ function toOrigin(hostOrUrl) {
 
 async function fetchJson(url, token) {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    // Cloudflare は失敗時 {success:false, errors:[{code,message}]} を返す。
+    // ここで本文を捨てると 404 の理由(トークンのスコープ不足/アカウント・プロジェクト
+    // 不一致 等)が分からなくなるので、要点を抜き出してメッセージに含める。
+    let detail = "";
+    try {
+      const body = await res.text();
+      try {
+        const errs = JSON.parse(body)?.errors;
+        detail = Array.isArray(errs)
+          ? errs.map((e) => `${e.code}: ${e.message}`).join("; ")
+          : "";
+      } catch {
+        /* JSON でなければ生本文の先頭だけ */
+      }
+      if (!detail) detail = body.slice(0, 300).replace(/\s+/g, " ").trim();
+    } catch {
+      /* 本文が読めない場合は status だけ */
+    }
+    // 404 は「該当リソースが無い」= 多くはトークンに Account→Cloudflare Pages 権限が
+    // 無い、または CLOUDFLARE_ACCOUNT_ID / プロジェクト名がトークンのアカウントと
+    // 一致していない、を意味する(Cloudflare は権限不足でも存在を隠して 404 を返す)。
+    const hint =
+      res.status === 404
+        ? " ※トークンの Account→Cloudflare Pages 権限、CLOUDFLARE_ACCOUNT_ID、プロジェクト名を確認"
+        : "";
+    throw new Error(`HTTP ${res.status}${detail ? ` (${detail})` : ""}${hint}`);
+  }
   return res.json();
 }
 
@@ -97,11 +124,13 @@ async function resolveDeploymentUrls(base, account, project, token, env, sha) {
 }
 
 async function main() {
-  const token = process.env.CF_API_TOKEN;
-  const account = process.env.CF_ACCOUNT_ID;
-  const project = process.env.CF_PAGES_PROJECT;
-  const sha = process.env.COMMIT_SHA;
-  const env = process.env.DEPLOY_ENV === "production" ? "production" : "preview";
+  // Secrets/変数はコピペ時の末尾改行・空白が紛れやすい。そのまま URL や
+  // Authorization ヘッダに入れると 404 / 認証エラーになるため trim して正規化する。
+  const token = (process.env.CF_API_TOKEN || "").trim();
+  const account = (process.env.CF_ACCOUNT_ID || "").trim();
+  const project = (process.env.CF_PAGES_PROJECT || "").trim();
+  const sha = (process.env.COMMIT_SHA || "").trim();
+  const env = (process.env.DEPLOY_ENV || "").trim() === "production" ? "production" : "preview";
 
   if (!token || !account || !project) {
     warn("CF_API_TOKEN / CF_ACCOUNT_ID / CF_PAGES_PROJECT が未設定。解決をスキップ。");
