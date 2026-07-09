@@ -19,6 +19,7 @@
                        ├─ GET  /api/auth/login|callback|logout … ログイン導線
                        ├─ GET  /api/me         … ログイン中ユーザー
                        ├─ GET  /api/apps       … 台帳 (data/apps.json)
+                       ├─ GET  /api/registry   … 台帳＋GAS自動列挙のマージ (Phase 2)
                        └─ ALL  /api/proxy/:id  … GASへの中継 (CORS回避・URL秘匿)
 ```
 
@@ -189,6 +190,33 @@ npx wrangler pages secret put PROXY_TARGETS
 (ダッシュボードからも Settings → Environment variables で暗号化変数として登録可能)
 
 → ポータルからは `/api/proxy/kintai-api?…` で呼び出せる (GET/POSTのみ)。
+
+### GAS一覧の自動取得 (Phase 2)
+
+デプロイ済みGAS Webアプリを手動で `apps.json` に書かずに自動列挙する。「レジストリ」役の
+GAS Webアプリ (`gas/registry/`) が自分のGASプロジェクトを Drive API + Apps Script API で
+列挙し、ポータルの `/api/registry` がそれをプロキシ+キャッシュ(5分)して手動台帳と
+マージ表示する(自動取得分には「自動」バッジが付く)。
+
+1. `gas/registry/` を新規GASプロジェクトに配置してWebアプリとしてデプロイ
+   (手順は [`gas/registry/README.md`](gas/registry/README.md))。
+2. デプロイURLを `PROXY_TARGETS` の `registry` キーに登録:
+   ```bash
+   npx wrangler pages secret put PROXY_TARGETS
+   # 入力例: {"registry":"https://script.google.com/macros/s/XXXX/exec?token=秘密"}
+   ```
+3. 除外・表示名の上書きは `data/apps.json` の `gasRegistry` で調整:
+   ```json
+   {
+     "apps": [ ... ],
+     "gasRegistry": {
+       "exclude": ["除外したいscriptId"],
+       "overrides": { "あるscriptId": { "name": "表示名", "category": "設計ツール" } }
+     }
+   }
+   ```
+
+`registry` が未登録のときは `/api/registry` は手動台帳のみを返すので、設定前でも画面は動く。
 
 ### 手動デプロイ
 

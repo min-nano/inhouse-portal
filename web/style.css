@@ -162,12 +162,27 @@ main {
   transform: translateY(-2px);
 }
 
+.app-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .app-category {
   font-size: 0.75rem;
   color: var(--accent);
   background: var(--accent-soft);
-  align-self: flex-start;
   padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+}
+
+.app-badge {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 0.05rem 0.5rem;
   border-radius: 999px;
 }
 

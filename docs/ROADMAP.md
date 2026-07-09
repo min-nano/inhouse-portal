@@ -37,13 +37,16 @@
 
 詳細設計: `docs/phase2-gas-registry.md`
 
-- [ ] GAS側: Drive API + Apps Script API で自分のGASプロジェクトと
+- [x] GAS側: Drive API + Apps Script API で自分のGASプロジェクトと
       WebアプリデプロイURLを列挙して返すレジストリWebアプリを作成
-- [ ] Functions側: `PROXY_TARGETS` にレジストリを登録し、`/api/registry` として
-      プロキシ+キャッシュ(Cache API, 数分)
-- [ ] ポータル画面: 手動台帳(apps.json)と自動取得分をマージ表示
-      (自動取得分には「自動」バッジ)
-- [ ] 除外リスト・表示名の上書き機構
+      → ソース `gas/registry/` (`Code.gs` / `appsscript.json` / `README.md`)。
+      デプロイ URL を `PROXY_TARGETS["registry"]` に登録すると有効化される
+- [x] Functions側: `PROXY_TARGETS` にレジストリを登録し、`/api/registry` として
+      プロキシ+キャッシュ(Cache API, 5分)。zodで検証し apps.json とマージして返す
+- [x] ポータル画面: 手動台帳(apps.json)と自動取得分をマージ表示
+      (自動取得分には「自動」バッジ)。取得失敗時も手動分は表示(ベストエフォート)
+- [x] 除外リスト・表示名の上書き機構
+      (`data/apps.json` の `gasRegistry.exclude` / `gasRegistry.overrides`)
 
 ## Phase 3: グループウェア機能の拡張 (必要になったものから)
 

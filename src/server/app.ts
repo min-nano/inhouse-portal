@@ -1,8 +1,18 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { listCategories, type Registry } from "./registry";
+import {
+  listCategories,
+  resolveGasRegistryConfig,
+  type Registry,
+} from "./registry";
 import { parseProxyTargets, proxyRequest } from "./proxy";
+import {
+  fetchGasRegistry,
+  listPortalCategories,
+  mergeAutoApps,
+  type PortalApp,
+} from "./gas-registry";
 import {
   isAllowed,
   resolveAllowlist,
@@ -55,6 +65,9 @@ export type Env = {
 };
 
 type AppContext = Context<{ Bindings: Env }>;
+
+/** PROXY_TARGETS 内で GASレジストリのエンドポイントを指すキー名。 */
+const REGISTRY_TARGET_KEY = "registry";
 
 function isHttps(c: AppContext): boolean {
   return new URL(c.req.url).protocol === "https:";
@@ -257,6 +270,59 @@ export function createApp(registry: Registry) {
       categories: listCategories(registry),
     }),
   );
+
+  // Phase 2: 手動台帳(apps.json)と、GASレジストリからの自動取得分をマージして返す。
+  // 自動取得のエンドポイントは PROXY_TARGETS["registry"] に登録する(URLは環境変数
+  // なので外部に出ない)。未登録・取得失敗時は手動分のみを返し、画面を壊さない。
+  app.get("/api/registry", async (c) => {
+    const config = resolveGasRegistryConfig(registry);
+    const manualOnly = (
+      extra: Record<string, unknown> = {},
+    ): Response => {
+      const apps: PortalApp[] = registry.apps.map((a) => ({
+        ...a,
+        auto: false,
+      }));
+      return c.json({
+        apps,
+        categories: listPortalCategories(apps),
+        source: { manual: apps.length, auto: 0, ...extra },
+      });
+    };
+
+    let registryUrl: string | undefined;
+    try {
+      registryUrl = parseProxyTargets(c.env.PROXY_TARGETS)[REGISTRY_TARGET_KEY];
+    } catch {
+      // PROXY_TARGETS が壊れていても手動分は返す
+      return manualOnly({ registryConfigured: false });
+    }
+    if (!registryUrl) {
+      return manualOnly({ registryConfigured: false });
+    }
+
+    try {
+      const { apps: autoApps } = await fetchGasRegistry(registryUrl);
+      const merged = mergeAutoApps(registry.apps, autoApps, config);
+      const autoCount = merged.filter((a) => a.auto).length;
+      return c.json({
+        apps: merged,
+        categories: listPortalCategories(merged),
+        source: {
+          manual: merged.length - autoCount,
+          auto: autoCount,
+          registryConfigured: true,
+        },
+      });
+    } catch (err) {
+      // 取得・検証に失敗しても手動分は必ず返す(自動取得はベストエフォート)
+      return manualOnly({
+        registryConfigured: true,
+        stale: true,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
 
   app.all("/api/proxy/:id", async (c) => {
     let targets;

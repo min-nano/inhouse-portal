@@ -3,6 +3,13 @@ import { ALL_CATEGORY, filterApps, type AppEntry } from "./filter";
 type AppsResponse = {
   apps: AppEntry[];
   categories: string[];
+  source?: {
+    manual: number;
+    auto: number;
+    registryConfigured?: boolean;
+    stale?: boolean;
+    error?: string;
+  };
 };
 
 const state = {
@@ -65,9 +72,19 @@ function renderApps() {
       card.target = "_blank";
       card.rel = "noopener noreferrer";
 
+      const meta = document.createElement("div");
+      meta.className = "app-meta";
       const category = document.createElement("span");
       category.className = "app-category";
       category.textContent = app.category;
+      meta.append(category);
+      if (app.auto) {
+        const badge = document.createElement("span");
+        badge.className = "app-badge";
+        badge.textContent = "自動";
+        badge.title = "GASレジストリから自動取得したツールです";
+        meta.append(badge);
+      }
 
       const name = document.createElement("h2");
       name.textContent = app.name;
@@ -84,7 +101,7 @@ function renderApps() {
         tags.append(pill);
       }
 
-      card.append(category, name, description, tags);
+      card.append(meta, name, description, tags);
       return card;
     }),
   );
@@ -108,7 +125,9 @@ async function init() {
   showStatus("読み込み中…");
   loadUser();
   try {
-    const res = await fetch("/api/apps");
+    // 手動台帳(apps.json)と GASレジストリの自動取得分をマージした一覧。
+    // レジストリ未設定や取得失敗時も手動分は必ず返る。
+    const res = await fetch("/api/registry");
     if (res.status === 401) {
       // セッション切れ: ログインへ誘導
       location.href = "/api/auth/login";

@@ -1,5 +1,13 @@
 # Phase 2 設計メモ: GASレジストリAPI (デプロイ済みGASの自動列挙)
 
+> ✅ **実装済み**。本メモの設計をそのまま実装した:
+> - GAS側レジストリ: `gas/registry/`(`Code.gs` / `appsscript.json` / `README.md`)
+> - Functions側: `/api/registry`(`src/server/app.ts`)+ 取得/検証/マージ
+>   ロジック(`src/server/gas-registry.ts`)。`PROXY_TARGETS["registry"]` をプロキシし
+>   Cache API で5分キャッシュ、zod検証、apps.json とマージ
+> - 除外・上書き設定: `data/apps.json` の `gasRegistry`(`src/server/registry.ts`)
+> - 画面: `/api/registry` を参照し「自動」バッジ付きで表示(`web/main.ts`)
+
 ## 背景
 
 Apps Script API の `projects.deployments.list` はサービスアカウントに対応して
