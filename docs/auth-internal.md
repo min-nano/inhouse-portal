@@ -337,19 +337,22 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 偽トークンを弾くこと)も併せて確認する。
 
 **トリガー**(cron は付けない):
-- **デプロイ完了**: `repository_dispatch`(type `cloudflare-pages-deploy`)で発火。
-  中継が付ける `client_payload.mode`(既定 `production`)で ①/② を切り替える。
+- **デプロイ完了**: `check_run`(`types: [completed]`)で発火。Cloudflare Pages が
+  発行する **"Cloudflare Pages" Check Run** が `success` で完了したときだけ検査する
+  (job の `if` で `name == 'Cloudflare Pages'` かつ `app.slug ==
+  'cloudflare-workers-and-pages'` かつ `conclusion == 'success'` を判定)。
+  `check_suite.head_branch` が本番ブランチ(既定 `main`)なら ① production、
+  それ以外は ② preview。対象デプロイは `check_run.head_sha` で特定する。
 - **手動**: `workflow_dispatch`(`urls` と `mode` を上書き可)。
 
-> ⚠️ **なぜ `deployment_status` ではなく `repository_dispatch` か**: このプロジェクトは
+> ⚠️ **なぜ `check_run` か(`deployment_status` ではない理由)**: このプロジェクトは
 > `wrangler pages deploy`(Direct Upload)でデプロイするため、Cloudflare は GitHub の
-> Deployment を作らず `deployment_status` イベントが飛ばない(実際 `/deployments` は空)。
-> そこで **Cloudflare Notifications(Pages デプロイ成功)→ GAS 中継
-> ([`tools/cf-deploy-relay.gs`](../tools/cf-deploy-relay.gs))→ GitHub `repository_dispatch`**
-> という経路で発火させる。GitHub の起動口は認証必須で、Cloudflare の通知 Webhook は
-> payload/ヘッダが固定のため直結できず、トークンを持てる中継が要る。GAS は `doPost` で
-> ヘッダを読めないので、共有シークレットは Webhook URL の **クエリ文字列 `?key=`** で渡す。
-> セットアップ手順は `tools/cf-deploy-relay.gs` の冒頭コメント参照。
+> **Deployments API を使わず**、`deployment_status` イベントは飛ばない(`/deployments` は空)。
+> 一方 Cloudflare Pages は GitHub App `cloudflare-workers-and-pages` として **Check Run**
+> "Cloudflare Pages" を各コミットに付ける(PR のステータスチェックに出るあれ)。これは
+> `check_run` イベントとしてネイティブに発火するので、中継や通知 Webhook を一切使わずに
+> デプロイ完了をフックできる。`check_run` は default ブランチ上の workflow で動くため、
+> この仕組みは **main にマージ後**に有効になる。
 
 **検査対象URLの解決**: 検査対象は原則すべて Cloudflare Pages API から取得する
 ([`scripts/cf-deploy-urls.mjs`](../scripts/cf-deploy-urls.mjs))。手入力の変数維持は不要。
@@ -360,9 +363,9 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 | 本番固定 pages.dev | `inhouse-portal.pages.dev` | Project の `domains` / `subdomain`(production時) |
 | デプロイ毎のユニークURL / ブランチエイリアス | `<hash>.<project>.pages.dev` / `<branch>.<project>.pages.dev` | Deployment の `url` / `aliases` を commit SHA で特定 |
 
-production では **Project API の固定ドメイン + 最新(または SHA一致)デプロイのユニークURL**、
-preview では **最新デプロイのユニークURL / ブランチエイリアス** を解決する。`repository_dispatch`
-経由で SHA が渡らない場合は、そのモードの **最新の成功デプロイ**を対象にする。使う API:
+production では **Project API の固定ドメイン + `head_sha` 一致デプロイのユニークURL**、
+preview では **そのデプロイのユニークURL / ブランチエイリアス** を解決する。手動
+`workflow_dispatch` など SHA が渡らない場合は、そのモードの **最新の成功デプロイ**を対象にする。使う API:
 
 - `GET /accounts/{account}/pages/projects/{project}` → `domains` / `subdomain`(固定ドメイン)
 - `GET /accounts/{account}/pages/projects/{project}/deployments?env={production|preview}`

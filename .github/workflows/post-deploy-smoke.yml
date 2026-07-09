@@ -5,16 +5,17 @@ name: Post-deploy smoke (auth gate)
 # ヘッダでも素通りしないことを確認する。本番とプレビューで認証モデルが違うため
 # scripts/smoke.mjs をモード分けして実行する(本番=厳密ステータス / プレビュー=ブロック確認)。
 #
-# 検査対象URL(本番固定ドメイン / デプロイ毎のユニークURL / ブランチエイリアス)は
-# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から解決する。
+# トリガー: Cloudflare Pages はデプロイ結果を GitHub の **Check Run** で通知する
+# (GitHub App "cloudflare-workers-and-pages" が "Cloudflare Pages" という check run を発行)。
+# その完了(success)を check_run イベントで受けて発火する。wrangler direct-upload は
+# Deployments API を使わないため deployment_status は飛ばないが、この check run は付く。
 #
-# トリガー: Cloudflare のデプロイ完了通知を GAS 中継(tools/cf-deploy-relay.gs)で
-# repository_dispatch に変換して発火させる。wrangler direct-upload は GitHub Deployment を
-# 作らず deployment_status が飛ばないため、この中継方式を使う。
+# 検査対象URL(本番固定ドメイン / デプロイ毎のユニークURL / ブランチエイリアス)は
+# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から head_sha で解決する。
 
 on:
-  repository_dispatch:
-    types: [cloudflare-pages-deploy]
+  check_run:
+    types: [completed]
   # 手動実行(URL とモードを上書き可能)
   workflow_dispatch:
     inputs:
@@ -30,9 +31,20 @@ on:
 permissions:
   contents: read
 
+# 本番デプロイの検査は最新1本だけ走れば十分(古い実行はキャンセル)。
+concurrency:
+  group: post-deploy-smoke-${{ github.event.check_run.head_sha || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    # 手動実行、または Cloudflare Pages の check run が success で完了したときだけ。
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.check_run.name == 'Cloudflare Pages' &&
+       github.event.check_run.app.slug == 'cloudflare-workers-and-pages' &&
+       github.event.check_run.conclusion == 'success')
     steps:
       - uses: actions/checkout@v4
 
@@ -46,23 +58,23 @@ jobs:
           # 本番の固定検査対象。通常は Cloudflare API(Project の domains)から取得するので
           # 設定不要。API を使わない/補助したい場合のみ Variables に設定する。
           SMOKE_BASE_URLS: ${{ vars.SMOKE_BASE_URLS }}
+          # 本番ブランチ(既定 main)。この Check Run の head_branch がこれなら production。
+          PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH || 'main' }}
           DISPATCH_URLS: ${{ github.event.inputs.urls }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}
-          # repository_dispatch(GAS中継)から渡ってくるモード/SHA/明示URL
-          PAYLOAD_MODE: ${{ github.event.client_payload.mode }}
-          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
-          PAYLOAD_URL: ${{ github.event.client_payload.url }}
           EVENT: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.check_run.check_suite.head_branch }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
             mode="${DISPATCH_MODE:-production}"
             base="$DISPATCH_URLS"
             sha=""
           else
-            # repository_dispatch: 中継が付けたモード(既定 production)と、あれば明示URL/SHA。
-            mode="${PAYLOAD_MODE:-production}"
-            base="$PAYLOAD_URL"
-            sha="$PAYLOAD_SHA"
+            # check_run: head_branch が本番ブランチなら production、それ以外は preview。
+            if [ "$HEAD_BRANCH" = "$PRODUCTION_BRANCH" ]; then mode="production"; else mode="preview"; fi
+            base=""
+            sha="$HEAD_SHA"
           fi
           # 本番で base が空なら SMOKE_BASE_URLS をフォールバックに足す(任意設定)。
           if [ "$mode" = "production" ] && [ -z "$base" ]; then base="$SMOKE_BASE_URLS"; fi

@@ -214,11 +214,13 @@ typecheck → test → フロントビルド → Pages Functions バンドル検
 - **プレビュー**(ブランチ/PR デプロイ): 前段の Cloudflare Access でホスト全体が
   ゲートされるため「未認証で `200` を返さない=公開されていない」ことを検証。
 
-**トリガー**: `wrangler pages deploy`(Direct Upload)は GitHub Deployment を作らず
-`deployment_status` が飛ばないため、**Cloudflare Notifications(デプロイ成功)→ GAS 中継
-(`tools/cf-deploy-relay.gs`)→ GitHub `repository_dispatch`** で発火させる。
+**トリガー**: Cloudflare Pages はデプロイ結果を GitHub の **Check Run**("Cloudflare Pages")
+で通知するので、その `success` 完了を **`check_run`** イベントで受けて発火する
+(`wrangler pages deploy` は Deployments API を使わず `deployment_status` は飛ばないが、
+この Check Run は付く)。中継や通知設定は不要。default ブランチ上の workflow で動くため
+**main マージ後**に有効。`check_suite.head_branch` で本番/プレビューを判定する。
 
 検査対象URL(本番の固定ドメイン、デプロイ毎のユニークURL、ブランチエイリアス)は
-`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API から解決する。Secrets
-`CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。詳細と中継の
-セットアップ手順は [docs/auth-internal.md](docs/auth-internal.md)・`tools/cf-deploy-relay.gs` を参照。
+`scripts/cf-deploy-urls.mjs` が Cloudflare Pages API から `head_sha` で解決する。Secrets
+`CLOUDFLARE_API_TOKEN`(Pages:Read)/ `CLOUDFLARE_ACCOUNT_ID` が必要。詳細は
+[docs/auth-internal.md](docs/auth-internal.md) の「デプロイ後の自動チェック」を参照。

@@ -58,8 +58,8 @@ async function resolveProjectDomains(base, account, project, token) {
 
 /**
  * そのデプロイの url + aliases。
- * - SHA 指定あり: commit_hash 一致で特定(deployment_status 由来など)。
- * - SHA 指定なし: 最新の成功デプロイ(repository_dispatch 由来など。API は新しい順)。
+ * - SHA 指定あり: commit_hash 一致で特定(check_run.head_sha 由来など)。
+ * - SHA 指定なし: 最新の成功デプロイ(手動 workflow_dispatch など。API は新しい順)。
  */
 async function resolveDeploymentUrls(base, account, project, token, env, sha) {
   const url =
