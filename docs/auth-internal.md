@@ -337,10 +337,29 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 偽トークンを弾くこと)も併せて確認する。
 
 **トリガー**(cron は付けない):
-- **デプロイ完了**: Cloudflare Pages が発行する GitHub Deployment の `deployment_status`
-  (success)で発火。`environment` に `production` を含めば ① production モード、
-  それ以外(preview / ブランチ名)は ② preview モードで検査する。
+- **デプロイ完了**: `check_run`(`types: [completed]`)で発火。Cloudflare Pages が
+  発行する **"Cloudflare Pages" Check Run** が `success` で完了したときだけ検査する
+  (job の `if` で `name == 'Cloudflare Pages'` かつ `app.slug ==
+  'cloudflare-workers-and-pages'` かつ `conclusion == 'success'` を判定)。
+  `check_suite.head_branch` が本番ブランチ(既定 `main`)なら ① production、
+  それ以外は ② preview。対象デプロイは `check_run.head_sha` で特定する。
 - **手動**: `workflow_dispatch`(`urls` と `mode` を上書き可)。
+
+**結果の表示先(重要)**: `check_run` で起動したこの実行は **main の実行**として扱われ、
+ジョブの check run は main のコミットに付く。そのままではトリガー元のブランチ/PR の
+チェック欄に出ないため、検査結果を **`check_run.head_sha`(= そのブランチのコミット)へ
+commit status `auth-smoke`** として投稿する(開始時 `pending` → 終了時 `success`/`failure`)。
+これで各ブランチ/PR のチェック欄に表示され、ブランチ保護の必須チェックにも指定できる
+(`permissions: statuses: write` と `GITHUB_TOKEN` を使用)。
+
+> ⚠️ **なぜ `check_run` か(`deployment_status` ではない理由)**: このプロジェクトは
+> `wrangler pages deploy`(Direct Upload)でデプロイするため、Cloudflare は GitHub の
+> **Deployments API を使わず**、`deployment_status` イベントは飛ばない(`/deployments` は空)。
+> 一方 Cloudflare Pages は GitHub App `cloudflare-workers-and-pages` として **Check Run**
+> "Cloudflare Pages" を各コミットに付ける(PR のステータスチェックに出るあれ)。これは
+> `check_run` イベントとしてネイティブに発火するので、中継や通知 Webhook を一切使わずに
+> デプロイ完了をフックできる。`check_run` は default ブランチ上の workflow で動くため、
+> この仕組みは **main にマージ後**に有効になる。
 
 **検査対象URLの解決**: 検査対象は原則すべて Cloudflare Pages API から取得する
 ([`scripts/cf-deploy-urls.mjs`](../scripts/cf-deploy-urls.mjs))。手入力の変数維持は不要。
@@ -351,9 +370,9 @@ OAuth fail-closed でゲート)。**正確なステータスは環境依存**な
 | 本番固定 pages.dev | `inhouse-portal.pages.dev` | Project の `domains` / `subdomain`(production時) |
 | デプロイ毎のユニークURL / ブランチエイリアス | `<hash>.<project>.pages.dev` / `<branch>.<project>.pages.dev` | Deployment の `url` / `aliases` を commit SHA で特定 |
 
-`deployment_status` イベントの `deployment.sha` を使い、production では **Project API の
-固定ドメイン + そのデプロイのユニークURL**、preview では **そのデプロイのユニークURL /
-ブランチエイリアス** を解決する。使う API:
+production では **Project API の固定ドメイン + `head_sha` 一致デプロイのユニークURL**、
+preview では **そのデプロイのユニークURL / ブランチエイリアス** を解決する。手動
+`workflow_dispatch` など SHA が渡らない場合は、そのモードの **最新の成功デプロイ**を対象にする。使う API:
 
 - `GET /accounts/{account}/pages/projects/{project}` → `domains` / `subdomain`(固定ドメイン)
 - `GET /accounts/{account}/pages/projects/{project}/deployments?env={production|preview}`

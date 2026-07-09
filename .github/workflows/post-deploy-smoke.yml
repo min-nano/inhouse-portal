@@ -5,17 +5,22 @@ name: Post-deploy smoke (auth gate)
 # ヘッダでも素通りしないことを確認する。本番とプレビューで認証モデルが違うため
 # scripts/smoke.mjs をモード分けして実行する(本番=厳密ステータス / プレビュー=ブロック確認)。
 #
-# デプロイ毎に変わるユニークURL(<hash>.<project>.pages.dev)とブランチエイリアスは
-# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から commit SHA で解決して検査対象に足す。
+# トリガー: Cloudflare Pages はデプロイ結果を GitHub の **Check Run** で通知する
+# (GitHub App "cloudflare-workers-and-pages" が "Cloudflare Pages" という check run を発行)。
+# その完了(success)を check_run イベントで受けて発火する。wrangler direct-upload は
+# Deployments API を使わないため deployment_status は飛ばないが、この check run は付く。
+#
+# 検査対象URL(本番固定ドメイン / デプロイ毎のユニークURL / ブランチエイリアス)は
+# Cloudflare Pages API(scripts/cf-deploy-urls.mjs)から head_sha で解決する。
 
 on:
-  # Cloudflare Pages のデプロイ完了で発火(本番・プレビュー両方に GitHub Deployment を作る)
-  deployment_status:
+  check_run:
+    types: [completed]
   # 手動実行(URL とモードを上書き可能)
   workflow_dispatch:
     inputs:
       urls:
-        description: "検査する base URL(カンマ区切り)。空なら SMOKE_BASE_URLS を使う"
+        description: "検査する base URL(カンマ区切り)。空なら API / SMOKE_BASE_URLS を使う"
         required: false
         default: ""
       mode:
@@ -25,14 +30,25 @@ on:
 
 permissions:
   contents: read
+  # 検査結果を「トリガー元ブランチのコミット」に commit status として投稿するのに必要。
+  # (check_run 起動のこの実行自体は main の実行として扱われ、その check run は main の
+  #  コミットに付くため、ブランチ/PR のチェック欄には出ない。head_sha へ明示投稿する。)
+  statuses: write
+
+# 本番デプロイの検査は最新1本だけ走れば十分(古い実行はキャンセル)。
+concurrency:
+  group: post-deploy-smoke-${{ github.event.check_run.head_sha || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    # deployment_status のときは成功時のみ実行する。
+    # 手動実行、または Cloudflare Pages の check run が success で完了したときだけ。
     if: >-
-      github.event_name != 'deployment_status' ||
-      github.event.deployment_status.state == 'success'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.check_run.name == 'Cloudflare Pages' &&
+       github.event.check_run.app.slug == 'cloudflare-workers-and-pages' &&
+       github.event.check_run.conclusion == 'success')
     steps:
       - uses: actions/checkout@v4
 
@@ -40,47 +56,61 @@ jobs:
         with:
           node-version: 22
 
+      # 検査開始をブランチのコミットへ pending として通知(チェック欄に「実行中」を出す)。
+      - name: Post pending status to branch commit
+        if: github.event_name == 'check_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.check_run.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -nc --arg u "$RUN_URL" \
+            '{state:"pending",context:"auth-smoke",description:"認証チェックを実行中",target_url:$u}' \
+          | curl -sS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" -d @- >/dev/null
+
       - name: Resolve target and mode
         id: target
         env:
           # 本番の固定検査対象。通常は Cloudflare API(Project の domains)から取得するので
           # 設定不要。API を使わない/補助したい場合のみ Variables に設定する。
           SMOKE_BASE_URLS: ${{ vars.SMOKE_BASE_URLS }}
+          # 本番ブランチ(既定 main)。この Check Run の head_branch がこれなら production。
+          PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH || 'main' }}
           DISPATCH_URLS: ${{ github.event.inputs.urls }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}
           EVENT: ${{ github.event_name }}
-          DEPLOY_ENV: ${{ github.event.deployment_status.environment }}
-          EVENT_URL: ${{ github.event.deployment_status.environment_url }}
+          HEAD_BRANCH: ${{ github.event.check_run.check_suite.head_branch }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
             mode="${DISPATCH_MODE:-production}"
-            if [ "$mode" = "preview" ]; then
-              base="$DISPATCH_URLS"
-            else
-              base="${DISPATCH_URLS:-$SMOKE_BASE_URLS}"
-            fi
+            base="$DISPATCH_URLS"
+            sha=""
           else
-            # deployment_status: environment に "production" を含めば本番、
-            # それ以外(preview / ブランチ名)はプレビュー扱い。
-            case "$(printf '%s' "$DEPLOY_ENV" | tr '[:upper:]' '[:lower:]')" in
-              *production*) mode="production"; base="${SMOKE_BASE_URLS:-$EVENT_URL}" ;;
-              *)            mode="preview";    base="$EVENT_URL" ;;
-            esac
+            # check_run: head_branch が本番ブランチなら production、それ以外は preview。
+            if [ "$HEAD_BRANCH" = "$PRODUCTION_BRANCH" ]; then mode="production"; else mode="preview"; fi
+            base=""
+            sha="$HEAD_SHA"
           fi
+          # 本番で base が空なら SMOKE_BASE_URLS をフォールバックに足す(任意設定)。
+          if [ "$mode" = "production" ] && [ -z "$base" ]; then base="$SMOKE_BASE_URLS"; fi
           # API 解決用の env(Cloudflare の env フィルタは production / preview の2値)
           if [ "$mode" = "production" ]; then cf_env="production"; else cf_env="preview"; fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "cf_env=$cf_env" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Resolve deploy URLs from Cloudflare API
         id: cfurls
-        if: github.event_name == 'deployment_status'
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'inhouse-portal' }}
-          COMMIT_SHA: ${{ github.event.deployment.sha }}
+          COMMIT_SHA: ${{ steps.target.outputs.sha }}
           DEPLOY_ENV: ${{ steps.target.outputs.cf_env }}
         run: |
           # 失敗しても exit 0 で空を返す(本命のスモークは落とさない)。改行→カンマに畳む。
@@ -98,8 +128,8 @@ jobs:
           all="$(printf '%s,%s' "$BASE_URLS" "$API_URLS" | sed 's/^,//; s/,$//')"
           if [ -z "$all" ] || [ "$all" = "," ]; then
             echo "検査対象URLが1件も解決できませんでした。" >&2
-            echo "本番は変数 SMOKE_BASE_URLS を、プレビューは Cloudflare API 用の Secrets" >&2
-            echo "(CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)を設定してください。" >&2
+            echo "Cloudflare API 用の Secrets(CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)、" >&2
+            echo "または変数 SMOKE_BASE_URLS を設定してください。" >&2
             exit 2
           fi
           echo "検査モード: $MODE / 対象: $all"
@@ -108,3 +138,24 @@ jobs:
           else
             node scripts/smoke.mjs "$all"
           fi
+
+      # 検査結果をブランチのコミットへ commit status として投稿(PR/ブランチのチェック欄に表示)。
+      - name: Post result status to branch commit
+        if: always() && github.event_name == 'check_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.check_run.head_sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$JOB_STATUS" in
+            success) state=success; desc="認証チェック合格" ;;
+            failure) state=failure; desc="認証チェック不合格" ;;
+            *)       state=error;   desc="認証チェック中断 ($JOB_STATUS)" ;;
+          esac
+          jq -nc --arg s "$state" --arg d "$desc" --arg u "$RUN_URL" \
+            '{state:$s,context:"auth-smoke",description:$d,target_url:$u}' \
+          | curl -sS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" -d @- >/dev/null
