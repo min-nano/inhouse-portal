@@ -3,6 +3,16 @@ import { ALL_CATEGORY, filterApps, type AppEntry } from "./filter";
 type AppsResponse = {
   apps: AppEntry[];
   categories: string[];
+  source?: {
+    manual: number;
+    auto: number;
+    mode?: "user" | "shared" | "manual";
+    registryConfigured?: boolean;
+    stale?: boolean;
+    userAuthExpired?: boolean;
+    appsScriptApiDisabled?: boolean;
+    error?: string;
+  };
 };
 
 const state = {
@@ -65,9 +75,19 @@ function renderApps() {
       card.target = "_blank";
       card.rel = "noopener noreferrer";
 
+      const meta = document.createElement("div");
+      meta.className = "app-meta";
       const category = document.createElement("span");
       category.className = "app-category";
       category.textContent = app.category;
+      meta.append(category);
+      if (app.auto) {
+        const badge = document.createElement("span");
+        badge.className = "app-badge";
+        badge.textContent = "自動";
+        badge.title = "GASレジストリから自動取得したツールです";
+        meta.append(badge);
+      }
 
       const name = document.createElement("h2");
       name.textContent = app.name;
@@ -84,7 +104,7 @@ function renderApps() {
         tags.append(pill);
       }
 
-      card.append(category, name, description, tags);
+      card.append(meta, name, description, tags);
       return card;
     }),
   );
@@ -104,11 +124,37 @@ async function loadUser() {
   }
 }
 
+// source に応じた通知を $status に表示する。失効時は確実に復旧できる再連携リンクを張る
+// (通常の再ログインは prompt=select_account のため refresh token が再発行されない)。
+function showRegistryNotice(source: AppsResponse["source"]) {
+  if (!source) return;
+  if (source.appsScriptApiDisabled) {
+    showStatus(
+      "Apps Script API が未有効です。https://script.google.com/home/usersettings で有効化すると、あなたのGASが自動表示されます。",
+    );
+  } else if (source.userAuthExpired) {
+    $status.replaceChildren(
+      document.createTextNode("Google連携の有効期限が切れました。"),
+    );
+    const a = document.createElement("a");
+    a.href = "/api/auth/login?reconnect=1&redirect=/";
+    a.textContent = "再連携する";
+    $status.append(a);
+    $status.hidden = false;
+  } else if (source.stale) {
+    showStatus(
+      "GAS一覧の自動取得に一時的に失敗しました。手動登録分のみ表示しています。",
+    );
+  }
+}
+
 async function init() {
   showStatus("読み込み中…");
   loadUser();
   try {
-    const res = await fetch("/api/apps");
+    // 手動台帳(apps.json)と GAS自動取得分をマージした一覧。
+    // 連携未設定・取得失敗時も手動分は必ず返る。
+    const res = await fetch("/api/registry");
     if (res.status === 401) {
       // セッション切れ: ログインへ誘導
       location.href = "/api/auth/login";
@@ -122,6 +168,7 @@ async function init() {
     state.categories = data.categories;
     renderCategories();
     renderApps();
+    showRegistryNotice(data.source);
   } catch (err) {
     showStatus(
       `ツール一覧の取得に失敗しました (${err instanceof Error ? err.message : String(err)})。再読み込みしてください。`,

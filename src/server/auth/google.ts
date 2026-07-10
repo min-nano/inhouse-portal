@@ -14,6 +14,17 @@ const VALID_ISS = new Set([
   "accounts.google.com",
 ]);
 
+/**
+ * GASレジストリ(本人権限での自動列挙)に必要な最小スコープ。
+ * - drive.metadata.readonly: GASプロジェクト(script mimeType)の一覧(メタデータのみ)
+ * - script.deployments.readonly: 各プロジェクトのデプロイ(WebアプリURL)の参照
+ * これらは Google の「センシティブ」スコープ。内部(Internal)アプリなら審査不要。
+ */
+export const REGISTRY_SCOPES = [
+  "https://www.googleapis.com/auth/drive.metadata.readonly",
+  "https://www.googleapis.com/auth/script.deployments.readonly",
+];
+
 export type GoogleConfig = {
   clientId: string;
   clientSecret: string;
@@ -56,20 +67,39 @@ export async function pkceChallenge(verifier: string): Promise<string> {
   return base64urlFromBytes(new Uint8Array(digest));
 }
 
-/** Google の同意画面へのリダイレクトURLを組み立てる */
+/**
+ * Google の同意画面へのリダイレクトURLを組み立てる。
+ * `scopes` を渡すと openid/email/profile に追加し、`accessType: "offline"` で
+ * リフレッシュトークンを要求する(初回同意時のみ返る)。
+ */
 export function buildAuthUrl(
   cfg: GoogleConfig,
-  opts: { state: string; codeChallenge: string; hostedDomain?: string },
+  opts: {
+    state: string;
+    codeChallenge: string;
+    hostedDomain?: string;
+    scopes?: string[];
+    accessType?: "online" | "offline";
+    /** 既定 "select_account"。再連携では "consent" を渡し refresh token を再発行させる */
+    prompt?: string;
+  },
 ): string {
   const url = new URL(AUTH_ENDPOINT);
   url.searchParams.set("client_id", cfg.clientId);
   url.searchParams.set("redirect_uri", cfg.redirectUri);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set(
+    "scope",
+    ["openid", "email", "profile", ...(opts.scopes ?? [])].join(" "),
+  );
   url.searchParams.set("state", opts.state);
   url.searchParams.set("code_challenge", opts.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("prompt", "select_account");
+  url.searchParams.set("prompt", opts.prompt ?? "select_account");
+  if (opts.accessType === "offline") {
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("include_granted_scopes", "true");
+  }
   if (opts.hostedDomain) url.searchParams.set("hd", opts.hostedDomain);
   return url.toString();
 }
@@ -135,3 +165,120 @@ export async function exchangeCode(
   }
   return parseIdToken(data.id_token, cfg.clientId);
 }
+
+export type GoogleTokens = {
+  identity: GoogleIdentity;
+  accessToken: string;
+  /** access_type=offline のとき返る長期トークン。無い場合もある。 */
+  refreshToken?: string;
+  /** access token の有効秒数 */
+  expiresIn: number;
+  /** 実際に付与されたスコープ(スペース区切り) */
+  scope?: string;
+};
+
+/**
+ * 認可コードをトークン交換し、アクセス/リフレッシュトークン一式と身元を返す。
+ * インクリメンタル認可(連携フロー)で使う。
+ */
+export async function exchangeCodeForTokens(
+  cfg: GoogleConfig,
+  code: string,
+  codeVerifier: string,
+): Promise<GoogleTokens> {
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    code,
+    code_verifier: codeVerifier,
+    grant_type: "authorization_code",
+    redirect_uri: cfg.redirectUri,
+  });
+  const res = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`token exchange failed: ${res.status}`);
+  }
+  const data = (await res.json()) as {
+    id_token?: unknown;
+    access_token?: unknown;
+    refresh_token?: unknown;
+    expires_in?: unknown;
+    scope?: unknown;
+  };
+  if (typeof data.id_token !== "string") {
+    throw new Error("id_token missing in token response");
+  }
+  if (typeof data.access_token !== "string") {
+    throw new Error("access_token missing in token response");
+  }
+  return {
+    identity: parseIdToken(data.id_token, cfg.clientId),
+    accessToken: data.access_token,
+    refreshToken:
+      typeof data.refresh_token === "string" ? data.refresh_token : undefined,
+    expiresIn: typeof data.expires_in === "number" ? data.expires_in : 3600,
+    scope: typeof data.scope === "string" ? data.scope : undefined,
+  };
+}
+
+/**
+ * リフレッシュ失敗。恒久失効は `error=invalid_grant`(トークン取消/失効)のときだけ。
+ * `invalid_client`(secret設定ミス)や 429(レート制限)・5xx は一時障害として扱い、
+ * 保管トークンは削除しない。
+ */
+export class TokenRefreshError extends Error {
+  readonly status: number;
+  readonly errorCode?: string;
+  constructor(status: number, errorCode?: string) {
+    super(`token refresh failed: ${status}${errorCode ? ` (${errorCode})` : ""}`);
+    this.name = "TokenRefreshError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+  /** 恒久的な失効(連携解除すべき)か。invalid_grant のときだけ true。 */
+  get isInvalidGrant(): boolean {
+    return this.errorCode === "invalid_grant";
+  }
+}
+
+/** リフレッシュトークンから新しいアクセストークンを得る。 */
+export async function refreshAccessToken(
+  cfg: GoogleConfig,
+  refreshToken: string,
+): Promise<{ accessToken: string; expiresIn: number }> {
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  const res = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    // ステータスではなくボディの error を見て、invalid_grant のときだけ恒久失効扱いにする
+    const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+    throw new TokenRefreshError(
+      res.status,
+      typeof data.error === "string" ? data.error : undefined,
+    );
+  }
+  const data = (await res.json()) as {
+    access_token?: unknown;
+    expires_in?: unknown;
+  };
+  if (typeof data.access_token !== "string") {
+    throw new Error("access_token missing in refresh response");
+  }
+  return {
+    accessToken: data.access_token,
+    expiresIn: typeof data.expires_in === "number" ? data.expires_in : 3600,
+  };
+}
+

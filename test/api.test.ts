@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type Env } from "../src/server/app";
 import { loadRegistry } from "../src/server/registry";
 
@@ -68,5 +68,89 @@ describe("PROXY_TARGETS が壊れている場合", () => {
       makeEnv({ PROXY_TARGETS: "{not-json" }),
     );
     expect(res.status).toBe(500);
+  });
+});
+
+describe("GET /api/registry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  type RegistryBody = {
+    apps: { id: string; auto: boolean }[];
+    categories: string[];
+    source: {
+      manual: number;
+      auto: number;
+      registryConfigured?: boolean;
+      stale?: boolean;
+    };
+  };
+
+  it("registry 未設定なら手動分のみを auto:false で返す", async () => {
+    const res = await app.request("/api/registry", {}, makeEnv());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RegistryBody;
+    expect(body.apps.map((a) => a.id)).toEqual(["tool-a", "tool-b"]);
+    expect(body.apps.every((a) => a.auto === false)).toBe(true);
+    expect(body.source).toMatchObject({
+      auto: 0,
+      registryConfigured: false,
+    });
+  });
+
+  it("registry 設定済みなら自動取得分をマージして返す", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              apps: [
+                {
+                  scriptId: "XYZ",
+                  name: "自動ツール",
+                  url: "https://script.google.com/macros/s/XYZ/exec",
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    const res = await app.request(
+      "/api/registry",
+      {},
+      makeEnv({
+        PROXY_TARGETS: JSON.stringify({
+          registry: "https://script.google.com/macros/s/REG/exec",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RegistryBody;
+    expect(body.source).toMatchObject({ auto: 1, registryConfigured: true });
+    const auto = body.apps.find((a) => a.auto);
+    expect(auto?.id).toMatch(/^gas-/);
+  });
+
+  it("registry 取得に失敗しても手動分を stale で返す", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("boom", { status: 502 })),
+    );
+    const res = await app.request(
+      "/api/registry",
+      {},
+      makeEnv({
+        PROXY_TARGETS: JSON.stringify({
+          registry: "https://script.google.com/macros/s/REG/exec",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RegistryBody;
+    expect(body.apps.map((a) => a.id)).toEqual(["tool-a", "tool-b"]);
+    expect(body.source).toMatchObject({ stale: true, auto: 0 });
   });
 });

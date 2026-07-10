@@ -87,8 +87,8 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET
 | `AUTH_SECRET` | ✅ | secret | セッション/state のHMAC署名鍵。**ローテートで全セッション即失効** |
 | `GOOGLE_CLIENT_ID` | ✅ | secret/変数 | OAuth クライアントID |
 | `GOOGLE_CLIENT_SECRET` | ✅ | secret | OAuth クライアントシークレット |
-| `ALLOWED_EMAIL_DOMAINS` | △ | 変数 | 許可リスト(ドメイン系)。`*` 可。例 `*@example.co.jp` |
-| `ALLOWED_EMAILS` | △ | 変数 | 許可リスト(個別)。カンマ区切り。例 `taro@partner.com` |
+| `ALLOWED_EMAIL_DOMAINS` | △ | 変数 | 許可ドメイン。例 `example.co.jp` / `*.example.co.jp`(`*@`/`@` 前置は無視) |
+| `ALLOWED_EMAILS` | △ | secret | 許可する個別メール(PII)。カンマ区切り。例 `taro@partner.com`。**env は暗号化secretなので平文で可** |
 | `GOOGLE_HOSTED_DOMAIN` | 任意 | 変数 | 同意画面の `hd` ヒント(UX用)。例 `example.co.jp` |
 | `APP_BASE_URL` | 任意 | 変数 | redirect_uri の基点を明示上書き。通常はリクエストから自動導出 |
 | `SESSION_TTL_HOURS` | 任意 | 変数 | セッション有効時間。既定 `168`(7日) |
@@ -106,8 +106,8 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET
 > secret しか登録できない場合でもそのまま動く。コード変更不要)。secret は
 > 「暗号化保存され登録後は非表示」なだけで、実行時の値の見え方は変数と同一。
 
-> `ALLOWED_EMAIL_DOMAINS` と `ALLOWED_EMAILS` は分けているが役割は同じ(単に
-> 見通しのため)。どちらにワイルドカードや個別アドレスを書いてもよい。
+> `ALLOWED_EMAIL_DOMAINS` はドメイン、`ALLOWED_EMAILS` は個別メールという役割分担。
+> env はどちらも暗号化 secret として登録してよい(平文が KV に出る心配がない)。
 
 ### 3. (推奨) 許可リストを KV に置く
 
@@ -125,32 +125,45 @@ namespace を選ぶ(このリポジトリは `wrangler.jsonc` を置かない方
 バインディングはダッシュボードで設定する。設定ファイルがあるとダッシュボードの
 バインディング編集が無効化されるため)。
 
-キー `allowlist` に JSON 配列で登録する:
+キー `allowlist` に **`{ domains, emailHashes }`** 形式で登録する。**個別メールは
+KV に平文で置かず、`HMAC-SHA256(AUTH_SECRET, "allowlist:"+email)` のハッシュ**を入れる
+(KV が漏れても、AUTH_SECRET を知らない限り誰が許可されているか総当たりで特定できない)。
+ハッシュは同梱スクリプトで算出する:
 
 ```bash
+# 個別メールのハッシュを算出(AUTH_SECRET は本番と同じ値を渡す)
+AUTH_SECRET='<本番と同じ値>' node scripts/allowlist-hash.mjs taro@partner.com hanako@partner.co.jp
+# → {"domains":[],"emailHashes":["<hex>","<hex>"]} が出力される
+
+# domains を足して KV に登録
 npx wrangler kv key put --binding=AUTH_KV allowlist \
-  '["*@example.co.jp","taro@partner.com","hanako@partner.co.jp"]'
+  '{"domains":["example.co.jp"],"emailHashes":["<hex>","<hex>"]}'
 ```
 
-`{ "patterns": [...] }` 形式も受け付ける。**最終的な許可リストは env と KV の
-和集合**なので、安定した社内ドメインを env に、流動的な協力者を KV に、という
-使い分けもできる。
+**最終的な許可リストは env と KV の和集合**なので、安定した社内ドメインを env に、
+流動的な協力者(個別メール)を KV の `emailHashes` に、という使い分けもできる。
 
-## 許可リストの書式(ワイルドカード)
+> 後方互換: 旧形式の文字列配列 `["*@example.co.jp","taro@partner.com"]` や
+> `{ "patterns": [...] }` も引き続き読める(ドメイン/平文メールに自動振り分け)。
+> ただし**平文メールを KV に置くと列挙されうる**ため、新規は `emailHashes` を推奨。
 
-各エントリはメールアドレスのパターン。`*` を任意長のワイルドカードとして使え、
-検証済みメール(`email_verified: true`)に対して **全文一致・大文字小文字無視**
-で判定する。
+## 許可リストの書式
 
-| パターン | 意味 |
-|---|---|
-| `*@example.co.jp` | example.co.jp ドメインの全員(社内) |
-| `taro@partner.com` | 個別の協力者(完全一致) |
-| `*@*.example.co.jp` | サブドメイン配下(`a@team.example.co.jp` 等) |
+- **ドメイン**(`ALLOWED_EMAIL_DOMAINS` / KV `domains`): 検証済みメール
+  (`email_verified: true`)のドメイン部で判定(大文字小文字無視)。
+
+  | 記法 | 意味 |
+  |---|---|
+  | `example.co.jp`(`@example.co.jp` / `*@example.co.jp` も同義) | example.co.jp ドメインの全員(社内) |
+  | `*.example.co.jp` | サブドメイン配下のみ(`a@team.example.co.jp`。apex は含めない) |
+
+- **個別メール**: env `ALLOWED_EMAILS`(平文)/ KV `emailHashes`(HMACハッシュ)。
+  完全一致・大文字小文字無視。
 
 ## 運用
 
-- **協力者の追加**: KV の `allowlist` に1行足す(即時反映、デプロイ不要)。
+- **協力者の追加**: `scripts/allowlist-hash.mjs` でメールのハッシュを算出し、KV の
+  `allowlist.emailHashes` に足す(即時反映、デプロイ不要)。ドメイン単位なら `domains` に。
 - **オフボーディング**: 許可リストから外す → 再ログイン不可。既存セッションは
   TTL(既定7日)経過で自然失効。**全員を即時ログアウトさせたい**ときは
   `AUTH_SECRET` をローテートする(既存の全セッション・全stateが無効化される)。

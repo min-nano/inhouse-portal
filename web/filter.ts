@@ -5,6 +5,8 @@ export type AppEntry = {
   category: string;
   tags: string[];
   url: string;
+  /** GASレジストリからの自動取得エントリなら true(「自動」バッジ表示用) */
+  auto?: boolean;
 };
 
 export const ALL_CATEGORY = "すべて";
