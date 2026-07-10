@@ -194,13 +194,14 @@ npx wrangler pages secret put PROXY_TARGETS
 ### GAS一覧の自動取得 (Phase 2)
 
 デプロイ済みGAS Webアプリを手動で `apps.json` に書かずに自動列挙する。「レジストリ」役の
-GAS Webアプリ (`gas/registry/`) が自分のGASプロジェクトを Drive API + Apps Script API で
+GAS Webアプリ (`gas/src/registry/`) が自分のGASプロジェクトを Drive API + Apps Script API で
 列挙し、ポータルの `/api/registry` がそれをプロキシ+キャッシュ(5分)して手動台帳と
-マージ表示する(自動取得分には「自動」バッジが付く)。
+マージ表示する(自動取得分には「自動」バッジが付く)。GAS 側コードは単一の Apps Script
+プロジェクトに集約し **clasp** で管理する(全体の手順は [`gas/README.md`](gas/README.md))。
 
-1. `gas/registry/` を新規GASプロジェクトに配置してWebアプリとしてデプロイ
-   (手順は [`gas/registry/README.md`](gas/registry/README.md))。**匿名公開されるため
-   スクリプトプロパティ `SHARED_SECRET` の設定は必須**(未設定だと拒否される)。
+1. `gas/` を clasp で Apps Script プロジェクトに push し、Webアプリとしてデプロイ
+   (手順は [`gas/README.md`](gas/README.md) と [`gas/src/registry/README.md`](gas/src/registry/README.md))。
+   **匿名公開されるためスクリプトプロパティ `SHARED_SECRET` の設定は必須**(未設定だと拒否される)。
 2. デプロイURLを `PROXY_TARGETS` の `registry` キーに登録(`?token=` に上の秘密を付ける):
    ```bash
    npx wrangler pages secret put PROXY_TARGETS

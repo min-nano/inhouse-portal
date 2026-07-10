@@ -3,7 +3,7 @@
 デプロイ済みGAS Webアプリを自動列挙して JSON で返す「レジストリ」役のGAS。
 ポータル(Cloudflare Functions)の `/api/registry` がここをプロキシして、
 `data/apps.json` の手動台帳とマージ表示する。設計背景は
-[`docs/phase2-gas-registry.md`](../../docs/phase2-gas-registry.md) を参照。
+[`docs/phase2-gas-registry.md`](../../../docs/phase2-gas-registry.md) を参照。
 
 ## 応答フォーマット
 
@@ -22,22 +22,23 @@
 
 ## セットアップ手順
 
-1. **新規GASプロジェクトを作成**し、`Code.gs` と `appsscript.json` の内容を貼る
-   (`appsscript.json` はエディタの「プロジェクトの設定 → "appsscript.json" マニフェスト
-   ファイルをエディタで表示する」を有効化すると編集できる)。
-2. **Apps Script API を有効化**: 実行アカウントで
-   <https://script.google.com/home/usersettings> を開き「Google Apps Script API」をオン。
-3. **共有シークレット(必須)**: プロジェクトの設定 → スクリプトプロパティに
+> このコードは `gas/` の単一 Apps Script プロジェクトの一部として **clasp で管理**する。
+> プロジェクトの用意(ログイン / `.clasp.json` 作成 / `npm run gas:push`)は
+> [`../../README.md`](../../README.md) を参照。ここではレジストリ固有の設定のみ記す。
+
+1. **コードを push**: 上記手順でプロジェクトを用意し `npm run gas:push` で
+   `src/` を反映する(`registry/Code` と `appsscript.json` が入る)。
+2. **共有シークレット(必須)**: プロジェクトの設定 → スクリプトプロパティに
    `SHARED_SECRET` を追加する。このエンドポイントはポータルの許可リスト認証の外側で
    匿名公開されるため、**未設定だと拒否**(フェイルクローズド)する。`?token=<値>` が
    一致するリクエストにだけ応答する。
    > ⚠️ GAS の `doGet` はリクエストヘッダを読めないため、`token` はクエリ文字列で渡す。
    > GAS の実行ログ等に URL(=token)が残り得る点に留意すること。
-4. **Webアプリとしてデプロイ**:
+3. **Webアプリとしてデプロイ**(`npm run gas:deploy` またはエディタから):
    - 実行するユーザー: **自分**
    - アクセスできるユーザー: **全員**
    デプロイ後に発行される `/exec` URL を控える。
-5. **ポータルに登録**(URL はリポジトリに書かず Pages の環境変数へ):
+4. **ポータルに登録**(URL はリポジトリに書かず Pages の環境変数へ):
    ```bash
    npx wrangler pages secret put PROXY_TARGETS
    # 入力例: {"registry":"https://script.google.com/macros/s/XXXX/exec?token=秘密"}

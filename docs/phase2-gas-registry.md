@@ -3,7 +3,8 @@
 > ✅ **実装済み**。2つの取得方式を備える(`/api/registry` が優先順位で選択):
 >
 > **方式A: 共有レジストリ(このメモの当初設計)**
-> - GAS側レジストリ: `gas/registry/`(`Code.gs` / `appsscript.json` / `README.md`)
+> - GAS側レジストリ: `gas/src/registry/`(`Code.gs`)。GAS は単一 Apps Script
+>   プロジェクトに集約し clasp 管理(`gas/` / マニフェスト `gas/src/appsscript.json`)
 > - Functions側: `PROXY_TARGETS["registry"]` をプロキシし Cache API で5分キャッシュ、
 >   zod検証、apps.json とマージ(`src/server/gas-registry.ts`)
 > - **全員が同じ一覧**を見る(レジストリ実行ユーザーが所有するGAS)

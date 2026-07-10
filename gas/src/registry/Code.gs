@@ -15,7 +15,7 @@
  *   GAS の実行ログ等に URL(=token)が残り得る点に留意すること。
  *
  * 事前準備:
- *   - appsscript.json のスコープを付与(このフォルダの appsscript.json 参照。
+ *   - appsscript.json のスコープを付与(rootDir 直下の ../appsscript.json 参照。
  *     drive.metadata.readonly / script.deployments.readonly の最小権限)
  *   - スクリプトプロパティに SHARED_SECRET を設定(必須)
  *   - https://script.google.com/home/usersettings で Apps Script API を有効化

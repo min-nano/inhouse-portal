@@ -39,7 +39,8 @@
 
 - [x] GAS側: Drive API + Apps Script API で自分のGASプロジェクトと
       WebアプリデプロイURLを列挙して返すレジストリWebアプリを作成
-      → ソース `gas/registry/` (`Code.gs` / `appsscript.json` / `README.md`)。
+      → ソース `gas/src/registry/` (`Code.gs`)。GAS は単一 Apps Script プロジェクトに
+      集約し clasp 管理(`gas/` / マニフェスト `gas/src/appsscript.json`)。
       デプロイ URL を `PROXY_TARGETS["registry"]` に登録すると有効化される
 - [x] Functions側: `PROXY_TARGETS` にレジストリを登録し、`/api/registry` として
       プロキシ+キャッシュ(Cache API, 5分)。zodで検証し apps.json とマージして返す
