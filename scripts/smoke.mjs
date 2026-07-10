@@ -6,10 +6,12 @@
  * 含めず、GitHub Actions から呼ぶ:
  *   node scripts/smoke.mjs [--preview] <url> [url2 ...]
  *
- * 2つのモード(本番とプレビューで認証モデルが違うため):
+ * production モードは検査対象の **ホスト種別** でさらに2つに分岐する
+ * (同じ本番デプロイでも、ホストによって前段の認証モデルが違うため):
  *
- * ● production(既定): 本番はカスタムドメイン、または team domain/aud 未設定の
- *   pages.dev エイリアス。middleware が直接ゲートするので **正確なステータス** を検証する。
+ * ● production / カスタムドメイン(例 portal.example.co.jp): 前段の Cloudflare Access は
+ *   効かない(外部DNSのゾーンはアカウント内に無い)。middleware が直接ゲートするので
+ *   **正確なステータス** を検証する。
  *     - /api/health            → 200(公開パス。生存確認)
  *     - /api/apps  (未認証)    → 401(台帳データ保護)
  *     - /            (未認証)  → 302 → /api/auth/login(画面が漏れない)
@@ -17,6 +19,14 @@
  *     - /api/me   (未認証)     → 401
  *   さらに Zero Trust(Cloudflare Access)を装った偽装 `Cf-Access-*` ヘッダでも
  *   素通りしないこと(401/302 のまま)を検証する。
+ *
+ * ● production / pages.dev ホスト(例 <project>.pages.dev, <hash>.<project>.pages.dev):
+ *   本番でも `*.pages.dev` は Cloudflare 所有ゾーンなので前段の Cloudflare Access
+ *   (Zero Trust)がホスト全体をゲートする。middleware の公開パスである /api/health も
+ *   含めて、未認証は Access ログインへ 302 されて関数まで届かない。よって
+ *   カスタムドメインのような正確なステータスにはならないため、preview と同じく
+ *   「**200 で中身が漏れないこと**(=何らかの認証でブロックされていること)」を検証する。
+ *   /api/health も 200 を返さない(=Access が前段にいる)ことまで確認する。
  *
  * ● preview(--preview): プレビューは `*.pages.dev` 上で前段の Cloudflare Access が
  *   ホスト全体をゲートする(未設定でも middleware が OAuth fail-closed でゲート)。
@@ -150,10 +160,60 @@ function previewCases(origin) {
   ];
 }
 
+// 本番の pages.dev ホスト: 前段の Cloudflare Access(Zero Trust)がホスト全体をゲートするため、
+// middleware の公開パス /api/health も含めて未認証はすべて Access ログインへ 302 される。
+// カスタムドメインのような正確なステータスは出ないので「200 を返さない(=ブロック)」を検証する。
+// /api/health まで含めることで、Access が前段から外れて公開状態になる事故も検知できる。
+function zeroTrustCases(origin) {
+  return [
+    expectBlocked(origin, "health: /api/health も Zero Trust でブロック(≠200)", "/api/health"),
+    expectBlocked(origin, "apps: /api/apps 未認証はブロック", "/api/apps"),
+    expectBlocked(origin, "apps: /api/apps + 偽装Accessヘッダ もブロック", "/api/apps", {
+      headers: FORGED_ACCESS_HEADERS,
+    }),
+    expectBlocked(
+      origin,
+      "me: /api/me + 偽装Cf-Access-Authenticated-User-Email もブロック",
+      "/api/me",
+      { headers: FORGED_ACCESS_HEADERS },
+    ),
+    expectBlocked(origin, "proxy: /api/proxy/:id 未認証はブロック", "/api/proxy/__smoke_nonexistent"),
+    expectBlocked(origin, "page: / 未認証はブロック(画面が漏れない)", "/", {
+      accept: "text/html",
+    }),
+    expectBlocked(origin, "page: / + 偽装Accessヘッダ もブロック", "/", {
+      accept: "text/html",
+      headers: FORGED_ACCESS_HEADERS,
+    }),
+  ];
+}
+
+/**
+ * production 内でもホスト種別で認証モデルが違う。`*.pages.dev` は Cloudflare 所有ゾーンなので
+ * 前段の Cloudflare Access がホスト全体をゲートし、カスタムドメイン(外部DNS)は middleware が
+ * 直接ゲートする。ホスト名で判定する。
+ */
+function isPagesDevHost(origin) {
+  try {
+    return new URL(origin).hostname.endsWith(".pages.dev");
+  } catch {
+    return false;
+  }
+}
+
 async function checkOrigin(base, mode) {
   const origin = base.replace(/\/+$/, "");
-  console.log(`\n=== [${mode}] ${origin} ===`);
-  const cases = mode === "preview" ? previewCases(origin) : productionCases(origin);
+  // production でも pages.dev ホストは前段の Cloudflare Access がゲートするので、
+  // カスタムドメインの厳密ステータスではなく「ブロックされていること」を検証する。
+  const effectiveMode =
+    mode === "production" && isPagesDevHost(origin) ? "zero-trust" : mode;
+  console.log(`\n=== [${effectiveMode}] ${origin} ===`);
+  const cases =
+    effectiveMode === "preview"
+      ? previewCases(origin)
+      : effectiveMode === "zero-trust"
+        ? zeroTrustCases(origin)
+        : productionCases(origin);
   let failed = 0;
   for (const c of cases) {
     let result;
