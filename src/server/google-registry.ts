@@ -24,9 +24,15 @@ export class TokenInvalidError extends Error {
 type DriveFile = { id: string; name: string; modifiedTime?: string };
 
 /** ドライブ内の自分がアクセスできる GAS プロジェクトを列挙する(ページング対応)。 */
-export async function listUserScripts(accessToken: string): Promise<DriveFile[]> {
+export async function listUserScripts(
+  accessToken: string,
+  limit = MAX_PROJECTS,
+): Promise<DriveFile[]> {
   const headers = { Authorization: `Bearer ${accessToken}` };
   const files: DriveFile[] = [];
+  // orderBy=modifiedTime desc なので必要なのは先頭 limit 件だけ。使わないページを
+  // 取得してサブリクエストを浪費しないよう、limit 件そろったら打ち切る。
+  const pageSize = Math.min(Math.max(limit, 1), 100);
   let pageToken = "";
   do {
     const url = new URL(DRIVE_FILES);
@@ -35,7 +41,7 @@ export async function listUserScripts(accessToken: string): Promise<DriveFile[]>
       "mimeType='application/vnd.google-apps.script' and trashed=false",
     );
     url.searchParams.set("fields", "nextPageToken,files(id,name,modifiedTime)");
-    url.searchParams.set("pageSize", "100");
+    url.searchParams.set("pageSize", String(pageSize));
     url.searchParams.set("orderBy", "modifiedTime desc");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
@@ -54,8 +60,8 @@ export async function listUserScripts(accessToken: string): Promise<DriveFile[]>
       }
     }
     pageToken = data.nextPageToken ?? "";
-  } while (pageToken);
-  return files;
+  } while (pageToken && files.length < limit);
+  return files.slice(0, limit);
 }
 
 type Deployment = {
@@ -143,9 +149,9 @@ async function mapWithConcurrency<T, R>(
  *   (Apps Script API 未有効化のヒントを出すため)。一部だけ 403 の場合は無視して継続。
  */
 export async function fetchUserRegistry(accessToken: string): Promise<GasApp[]> {
-  const allScripts = await listUserScripts(accessToken);
-  // サブリクエスト上限に収まるよう、最近更新された上位のみを照会する
-  const scripts = allScripts.slice(0, MAX_PROJECTS);
+  // listUserScripts が最近更新の上位 MAX_PROJECTS 件までに絞って返す
+  // (Drive のページングもそこで打ち切られ、サブリクエストを浪費しない)。
+  const scripts = await listUserScripts(accessToken);
 
   type Outcome =
     | { kind: "app"; app: GasApp }

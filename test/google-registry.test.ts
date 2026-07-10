@@ -39,6 +39,30 @@ describe("listUserScripts", () => {
       TokenInvalidError,
     );
   });
+
+  it("limit に達したら次ページを取りに行かない(サブリクエスト浪費防止)", async () => {
+    // 1ページ目で limit を満たし、nextPageToken があっても2回目は呼ばない
+    const fetchMock = vi.fn(
+      async (_url: string) =>
+        new Response(
+          JSON.stringify({
+            files: [
+              { id: "A", name: "a" },
+              { id: "B", name: "b" },
+            ],
+            nextPageToken: "more",
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const files = await listUserScripts("good", 2);
+    expect(files.map((f) => f.id)).toEqual(["A", "B"]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    // pageSize は limit に合わせる
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0]);
+    expect(calledUrl.searchParams.get("pageSize")).toBe("2");
+  });
 });
 
 describe("fetchUserRegistry", () => {
