@@ -8,11 +8,18 @@ import {
 } from "./registry";
 import { parseProxyTargets, proxyRequest } from "./proxy";
 import {
+  edgeCache,
   fetchGasRegistry,
   listPortalCategories,
   mergeAutoApps,
+  type GasApp,
   type PortalApp,
 } from "./gas-registry";
+import {
+  fetchUserRegistry,
+  AppsScriptForbiddenError,
+  TokenInvalidError,
+} from "./google-registry";
 import {
   isAllowed,
   resolveAllowlist,
@@ -20,11 +27,24 @@ import {
 } from "./auth/allowlist";
 import {
   buildAuthUrl,
+  buildConnectUrl,
   exchangeCode,
+  exchangeCodeForTokens,
   pkceChallenge,
   randomString,
+  refreshAccessToken,
+  REGISTRY_SCOPES,
+  revokeToken,
+  TokenRefreshError,
   type GoogleConfig,
 } from "./auth/google";
+import { sha256hex } from "./auth/crypto";
+import {
+  deleteStoredToken,
+  isConnected,
+  loadStoredToken,
+  saveRefreshToken,
+} from "./auth/token-store";
 import {
   createSessionToken,
   DEFAULT_SESSION_TTL_HOURS,
@@ -33,6 +53,7 @@ import {
   SESSION_COOKIE,
   signState,
   verifyState,
+  type SessionUser,
 } from "./auth/session";
 
 export type Env = {
@@ -93,6 +114,46 @@ function googleConfig(c: AppContext): GoogleConfig | null {
   };
 }
 
+/** 現在のログインユーザー(自前セッション)を返す。無ければ null。 */
+async function getUser(c: AppContext): Promise<SessionUser | null> {
+  const secret = c.env.AUTH_SECRET;
+  if (!secret) return null;
+  return getSessionFromRequest(c.req.raw, secret);
+}
+
+/**
+ * 本人権限で GAS 一覧を取得する(アクセストークンへリフレッシュ→Drive/Apps Script API)。
+ * 結果は Cache API でユーザーごとに数分キャッシュし、GAS API への多数の呼び出しを抑える。
+ */
+async function fetchUserRegistryCached(
+  cfg: GoogleConfig,
+  email: string,
+  refreshToken: string,
+): Promise<GasApp[]> {
+  const cache = edgeCache();
+  const cacheKey = new Request(
+    `https://portal.internal/registry/user/${await sha256hex(email)}`,
+  );
+  if (cache) {
+    const hit = await cache.match(cacheKey);
+    if (hit) return (await hit.json()) as GasApp[];
+  }
+  const { accessToken } = await refreshAccessToken(cfg, refreshToken);
+  const apps = await fetchUserRegistry(accessToken);
+  if (cache) {
+    await cache.put(
+      cacheKey,
+      new Response(JSON.stringify(apps), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "max-age=300",
+        },
+      }),
+    );
+  }
+  return apps;
+}
+
 /** ログイン後の戻り先。同一オリジンの絶対パスのみ許可(オープンリダイレクト防止) */
 function sanitizeRedirect(raw: string | undefined): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
@@ -126,6 +187,57 @@ function forbiddenPage(email: string): string {
 <p>心当たりがない場合は管理者にご連絡ください。別のアカウントで試すには
 <a href="/api/auth/login">こちらから再ログイン</a>してください。</p>
 </body></html>`;
+}
+
+/**
+ * 連携フローのコールバック処理。追加スコープ付きの認可コードをトークン交換し、
+ * リフレッシュトークンを暗号化して KV に保管する。
+ */
+async function handleConnectCallback(
+  c: AppContext,
+  cfg: GoogleConfig,
+  secret: string,
+  code: string,
+  saved: { verifier: string; redirect: string; email?: string },
+): Promise<Response> {
+  const kv = c.env.AUTH_KV;
+  if (!kv) return c.text("トークン保管用の AUTH_KV が未設定です", 503);
+
+  let tokens;
+  try {
+    tokens = await exchangeCodeForTokens(cfg, code, saved.verifier);
+  } catch {
+    return c.text("Googleトークン交換に失敗しました", 502);
+  }
+  if (!tokens.identity.emailVerified) {
+    return c.text("メールアドレスが未確認のGoogleアカウントです", 403);
+  }
+  const allowlist = await resolveAllowlist(c.env);
+  if (!isAllowed(tokens.identity.email, allowlist)) {
+    return c.html(forbiddenPage(tokens.identity.email), 403);
+  }
+  // 連携開始時のログインアカウントと一致していること(別アカウントの取り違え防止)
+  if (
+    saved.email &&
+    saved.email.toLowerCase() !== tokens.identity.email.toLowerCase()
+  ) {
+    return c.text(
+      "連携しようとしたGoogleアカウントが、ログイン中のアカウントと一致しません。同じアカウントで連携してください。",
+      400,
+    );
+  }
+  if (!tokens.refreshToken) {
+    return c.text(
+      "リフレッシュトークンを取得できませんでした。Googleアカウントのアクセス権限画面 (https://myaccount.google.com/permissions) で本アプリの許可を一度取り消してから、再度連携してください。",
+      400,
+    );
+  }
+  await saveRefreshToken(kv, secret, tokens.identity.email, {
+    refreshToken: tokens.refreshToken,
+    scope: tokens.scope,
+    connectedAt: Date.now(),
+  });
+  return c.redirect(sanitizeRedirect(saved.redirect));
 }
 
 export function createApp(registry: Registry) {
@@ -183,12 +295,19 @@ export function createApp(registry: Registry) {
       state: string;
       verifier: string;
       redirect: string;
+      flow?: string;
+      email?: string;
     }>(stateCookie, secret);
     if (!saved || saved.state !== state) {
       return c.text(
         "stateが一致しません (ログインの有効期限切れの可能性があります。もう一度お試しください)",
         400,
       );
+    }
+
+    // 連携フロー(Drive スコープの追加同意): リフレッシュトークンを暗号化保管する
+    if (saved.flow === "connect") {
+      return handleConnectCallback(c, cfg, secret, code, saved);
     }
 
     let identity;
@@ -271,57 +390,152 @@ export function createApp(registry: Registry) {
     }),
   );
 
-  // Phase 2: 手動台帳(apps.json)と、GASレジストリからの自動取得分をマージして返す。
-  // 自動取得のエンドポイントは PROXY_TARGETS["registry"] に登録する(URLは環境変数
-  // なので外部に出ない)。未登録・取得失敗時は手動分のみを返し、画面を壊さない。
+  // Phase 2: 手動台帳(apps.json)と、GAS自動取得分をマージして返す。
+  //
+  // 取得元は次の優先順位:
+  //   1. ユーザーモード(方式B): 本人が Google Drive 連携済みなら、本人の権限で
+  //      「その人がアクセスできる GAS」だけを列挙する(per-user アクセス制御)。
+  //   2. 共有モード: PROXY_TARGETS["registry"] の共有レジストリGASをプロキシ。
+  //   3. 手動のみ: どちらも無ければ apps.json だけを返す。
+  // いずれの失敗時も手動分は必ず返し、画面を壊さない。
   app.get("/api/registry", async (c) => {
     const config = resolveGasRegistryConfig(registry);
-    const manualOnly = (
-      extra: Record<string, unknown> = {},
+
+    const mergedResponse = (
+      autoApps: GasApp[],
+      extra: Record<string, unknown>,
     ): Response => {
-      const apps: PortalApp[] = registry.apps.map((a) => ({
-        ...a,
-        auto: false,
-      }));
-      return c.json({
-        apps,
-        categories: listPortalCategories(apps),
-        source: { manual: apps.length, auto: 0, ...extra },
-      });
-    };
-
-    let registryUrl: string | undefined;
-    try {
-      registryUrl = parseProxyTargets(c.env.PROXY_TARGETS)[REGISTRY_TARGET_KEY];
-    } catch {
-      // PROXY_TARGETS が壊れていても手動分は返す
-      return manualOnly({ registryConfigured: false });
-    }
-    if (!registryUrl) {
-      return manualOnly({ registryConfigured: false });
-    }
-
-    try {
-      const { apps: autoApps } = await fetchGasRegistry(registryUrl);
       const merged = mergeAutoApps(registry.apps, autoApps, config);
       const autoCount = merged.filter((a) => a.auto).length;
       return c.json({
         apps: merged,
         categories: listPortalCategories(merged),
-        source: {
-          manual: merged.length - autoCount,
-          auto: autoCount,
-          registryConfigured: true,
-        },
+        source: { manual: merged.length - autoCount, auto: autoCount, ...extra },
+      });
+    };
+    const manualOnly = (extra: Record<string, unknown> = {}): Response =>
+      mergedResponse([], extra);
+
+    // ---- 1. ユーザーモード(本人権限) ----
+    const user = await getUser(c);
+    const secret = c.env.AUTH_SECRET;
+    const cfg = googleConfig(c);
+    if (user && secret && cfg && c.env.AUTH_KV) {
+      const stored = await loadStoredToken(c.env.AUTH_KV, secret, user.email);
+      if (stored) {
+        try {
+          const autoApps = await fetchUserRegistryCached(
+            cfg,
+            user.email,
+            stored.refreshToken,
+          );
+          return mergedResponse(autoApps, { mode: "user" });
+        } catch (err) {
+          // 連携が失効(取消・無効)していたら自動で連携解除して手動へフォールバック
+          const expired =
+            err instanceof TokenInvalidError ||
+            (err instanceof TokenRefreshError && err.isInvalidGrant);
+          if (expired) {
+            await deleteStoredToken(c.env.AUTH_KV, user.email);
+            return manualOnly({ mode: "user", userAuthExpired: true });
+          }
+          if (err instanceof AppsScriptForbiddenError) {
+            // Apps Script API 未有効化のヒント(利用者が有効化すれば解消)
+            return manualOnly({ mode: "user", appsScriptApiDisabled: true });
+          }
+          return manualOnly({
+            mode: "user",
+            stale: true,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    // ---- 2. 共有モード(PROXY_TARGETS["registry"]) ----
+    let registryUrl: string | undefined;
+    try {
+      registryUrl = parseProxyTargets(c.env.PROXY_TARGETS)[REGISTRY_TARGET_KEY];
+    } catch {
+      return manualOnly({ mode: "manual", registryConfigured: false });
+    }
+    if (!registryUrl) {
+      return manualOnly({ mode: "manual", registryConfigured: false });
+    }
+    try {
+      const { apps: autoApps } = await fetchGasRegistry(registryUrl);
+      return mergedResponse(autoApps, {
+        mode: "shared",
+        registryConfigured: true,
       });
     } catch (err) {
-      // 取得・検証に失敗しても手動分は必ず返す(自動取得はベストエフォート)
       return manualOnly({
+        mode: "shared",
         registryConfigured: true,
         stale: true,
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  // Phase 2 (方式B): 本人の Google Drive 連携。ログイン中ユーザーだけが開始でき、
+  // 追加スコープ(drive.metadata.readonly / script.deployments.readonly)に同意すると
+  // リフレッシュトークンを暗号化保管する。
+  app.get("/api/registry/connect", async (c) => {
+    const user = await getUser(c);
+    if (!user) return c.json({ error: "認証が必要です" }, 401);
+    const cfg = googleConfig(c);
+    if (!cfg) return c.text("認証が未設定です", 503);
+    if (!c.env.AUTH_KV) {
+      return c.text("トークン保管用の AUTH_KV が未設定です", 503);
+    }
+    const secret = c.env.AUTH_SECRET!;
+    const state = randomString(24);
+    const verifier = randomString(32);
+    const challenge = await pkceChallenge(verifier);
+    const redirect = sanitizeRedirect(c.req.query("redirect"));
+
+    const stateToken = await signState(
+      { state, verifier, redirect, flow: "connect", email: user.email },
+      secret,
+    );
+    setCookie(c, OAUTH_COOKIE, stateToken, cookieOptions(isHttps(c), 600));
+
+    return c.redirect(
+      buildConnectUrl(cfg, {
+        state,
+        codeChallenge: challenge,
+        scopes: REGISTRY_SCOPES,
+        loginHint: user.email,
+        hostedDomain: c.env.GOOGLE_HOSTED_DOMAIN,
+      }),
+    );
+  });
+
+  // 連携状態の取得(画面の連携ボタン表示用)
+  app.get("/api/registry/status", async (c) => {
+    const user = await getUser(c);
+    const available = !!(googleConfig(c) && c.env.AUTH_KV);
+    let connected = false;
+    if (user && c.env.AUTH_KV) {
+      connected = await isConnected(c.env.AUTH_KV, user.email);
+    }
+    return c.json({ authenticated: !!user, available, connected });
+  });
+
+  // 連携解除: 保管トークンを削除し、Google 側でも失効させる
+  app.post("/api/registry/disconnect", async (c) => {
+    const user = await getUser(c);
+    if (!user) return c.json({ error: "認証が必要です" }, 401);
+    const kv = c.env.AUTH_KV;
+    if (!kv) return c.json({ ok: true });
+    const secret = c.env.AUTH_SECRET;
+    if (secret) {
+      const stored = await loadStoredToken(kv, secret, user.email);
+      if (stored?.refreshToken) await revokeToken(stored.refreshToken);
+    }
+    await deleteStoredToken(kv, user.email);
+    return c.json({ ok: true });
   });
 
   app.all("/api/proxy/:id", async (c) => {

@@ -16,6 +16,16 @@
       </div>
       <div id="user" class="user" hidden>
         <span id="user-email" class="user-email"></span>
+        <a
+          id="drive-connect"
+          class="drive-connect"
+          href="/api/registry/connect?redirect=/"
+          hidden
+          >Google Driveと連携</a
+        >
+        <button id="drive-disconnect" class="drive-disconnect" type="button" hidden>
+          Drive連携を解除
+        </button>
         <a class="logout" href="/api/auth/logout">ログアウト</a>
       </div>
     </header>

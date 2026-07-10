@@ -121,8 +121,8 @@ export function listPortalCategories(apps: PortalApp[]): string[] {
 /** 既定キャッシュ時間(秒)。GAS呼び出しは数秒かかるため数分キャッシュする。 */
 export const REGISTRY_CACHE_SECONDS = 300;
 
-/** Cloudflare 実行環境の `caches.default`(あれば)を取り出す。 */
-function edgeCache(): Cache | undefined {
+/** Cloudflare 実行環境の `caches.default`(あれば)を取り出す。テスト環境では undefined。 */
+export function edgeCache(): Cache | undefined {
   if (typeof caches === "undefined") return undefined;
   return (caches as unknown as { default?: Cache }).default;
 }

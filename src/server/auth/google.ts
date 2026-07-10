@@ -9,10 +9,22 @@
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 const VALID_ISS = new Set([
   "https://accounts.google.com",
   "accounts.google.com",
 ]);
+
+/**
+ * GASレジストリ(本人権限での自動列挙)に必要な最小スコープ。
+ * - drive.metadata.readonly: GASプロジェクト(script mimeType)の一覧(メタデータのみ)
+ * - script.deployments.readonly: 各プロジェクトのデプロイ(WebアプリURL)の参照
+ * これらは Google の「センシティブ」スコープ。内部(Internal)アプリなら審査不要。
+ */
+export const REGISTRY_SCOPES = [
+  "https://www.googleapis.com/auth/drive.metadata.readonly",
+  "https://www.googleapis.com/auth/script.deployments.readonly",
+];
 
 export type GoogleConfig = {
   clientId: string;
@@ -70,6 +82,37 @@ export function buildAuthUrl(
   url.searchParams.set("code_challenge", opts.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("prompt", "select_account");
+  if (opts.hostedDomain) url.searchParams.set("hd", opts.hostedDomain);
+  return url.toString();
+}
+
+/**
+ * 追加スコープの同意画面URL(インクリメンタル認可)を組み立てる。
+ * refresh token を得るため access_type=offline + prompt=consent を付け、
+ * 既存の許可も維持するため include_granted_scopes=true を付ける。
+ */
+export function buildConnectUrl(
+  cfg: GoogleConfig,
+  opts: {
+    state: string;
+    codeChallenge: string;
+    scopes: string[];
+    loginHint?: string;
+    hostedDomain?: string;
+  },
+): string {
+  const url = new URL(AUTH_ENDPOINT);
+  url.searchParams.set("client_id", cfg.clientId);
+  url.searchParams.set("redirect_uri", cfg.redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", ["openid", "email", ...opts.scopes].join(" "));
+  url.searchParams.set("state", opts.state);
+  url.searchParams.set("code_challenge", opts.codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("include_granted_scopes", "true");
+  if (opts.loginHint) url.searchParams.set("login_hint", opts.loginHint);
   if (opts.hostedDomain) url.searchParams.set("hd", opts.hostedDomain);
   return url.toString();
 }
@@ -134,4 +177,124 @@ export async function exchangeCode(
     throw new Error("id_token missing in token response");
   }
   return parseIdToken(data.id_token, cfg.clientId);
+}
+
+export type GoogleTokens = {
+  identity: GoogleIdentity;
+  accessToken: string;
+  /** access_type=offline のとき返る長期トークン。無い場合もある。 */
+  refreshToken?: string;
+  /** access token の有効秒数 */
+  expiresIn: number;
+  /** 実際に付与されたスコープ(スペース区切り) */
+  scope?: string;
+};
+
+/**
+ * 認可コードをトークン交換し、アクセス/リフレッシュトークン一式と身元を返す。
+ * インクリメンタル認可(連携フロー)で使う。
+ */
+export async function exchangeCodeForTokens(
+  cfg: GoogleConfig,
+  code: string,
+  codeVerifier: string,
+): Promise<GoogleTokens> {
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    code,
+    code_verifier: codeVerifier,
+    grant_type: "authorization_code",
+    redirect_uri: cfg.redirectUri,
+  });
+  const res = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`token exchange failed: ${res.status}`);
+  }
+  const data = (await res.json()) as {
+    id_token?: unknown;
+    access_token?: unknown;
+    refresh_token?: unknown;
+    expires_in?: unknown;
+    scope?: unknown;
+  };
+  if (typeof data.id_token !== "string") {
+    throw new Error("id_token missing in token response");
+  }
+  if (typeof data.access_token !== "string") {
+    throw new Error("access_token missing in token response");
+  }
+  return {
+    identity: parseIdToken(data.id_token, cfg.clientId),
+    accessToken: data.access_token,
+    refreshToken:
+      typeof data.refresh_token === "string" ? data.refresh_token : undefined,
+    expiresIn: typeof data.expires_in === "number" ? data.expires_in : 3600,
+    scope: typeof data.scope === "string" ? data.scope : undefined,
+  };
+}
+
+/** リフレッシュ失敗。status が 4xx なら連携失効(取消/無効)、5xx なら一時障害。 */
+export class TokenRefreshError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`token refresh failed: ${status}`);
+    this.name = "TokenRefreshError";
+    this.status = status;
+  }
+  /** 恒久的な失効(連携解除すべき)か。 */
+  get isInvalidGrant(): boolean {
+    return this.status >= 400 && this.status < 500;
+  }
+}
+
+/** リフレッシュトークンから新しいアクセストークンを得る。 */
+export async function refreshAccessToken(
+  cfg: GoogleConfig,
+  refreshToken: string,
+): Promise<{ accessToken: string; expiresIn: number }> {
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  const res = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    // 400/401 は連携失効(ユーザーが取消 or トークン無効)。呼び出し側で連携解除する。
+    throw new TokenRefreshError(res.status);
+  }
+  const data = (await res.json()) as {
+    access_token?: unknown;
+    expires_in?: unknown;
+  };
+  if (typeof data.access_token !== "string") {
+    throw new Error("access_token missing in refresh response");
+  }
+  return {
+    accessToken: data.access_token,
+    expiresIn: typeof data.expires_in === "number" ? data.expires_in : 3600,
+  };
+}
+
+/** アクセス/リフレッシュトークンを Google 側で失効させる(連携解除時。ベストエフォート)。 */
+export async function revokeToken(token: string): Promise<boolean> {
+  try {
+    const res = await fetch(REVOKE_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }).toString(),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
