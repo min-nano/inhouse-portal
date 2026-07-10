@@ -27,21 +27,18 @@ import {
 } from "./auth/allowlist";
 import {
   buildAuthUrl,
-  buildConnectUrl,
   exchangeCode,
   exchangeCodeForTokens,
   pkceChallenge,
   randomString,
   refreshAccessToken,
   REGISTRY_SCOPES,
-  revokeToken,
   TokenRefreshError,
   type GoogleConfig,
 } from "./auth/google";
 import { sha256hex } from "./auth/crypto";
 import {
   deleteStoredToken,
-  isConnected,
   loadStoredToken,
   saveRefreshToken,
 } from "./auth/token-store";
@@ -73,8 +70,16 @@ export type Env = {
   /** 許可リスト(env ベースライン)。`*` ワイルドカード可 */
   ALLOWED_EMAIL_DOMAINS?: string;
   ALLOWED_EMAILS?: string;
-  /** 許可リスト(運用中に追加・失効する分)を置くKV */
+  /** 許可リスト(運用中に追加・失効する分)を置くKV。GAS本人モードのトークン保管にも使う */
   AUTH_KV?: KVNamespace;
+  /**
+   * "1"/"true" でログイン時に GASレジストリ用スコープ
+   * (drive.metadata.readonly / script.deployments.readonly)を要求し、
+   * リフレッシュトークンを暗号化して AUTH_KV に保管する(方式B: 本人権限での自動列挙)。
+   * 有効化前に OAuth 同意画面へ当該スコープを追加しておくこと(未追加だと invalid_scope で
+   * ログインが失敗する)。AUTH_KV 未設定時はこのフラグは無視される。
+   */
+  REGISTRY_LOGIN_SCOPES?: string;
   /**
    * プレビュー(pages.dev)で Cloudflare Access のトークンを署名検証するための設定。
    * 設定すると presence チェックから厳密な RS256 署名検証に格上げされる。
@@ -112,6 +117,22 @@ function googleConfig(c: AppContext): GoogleConfig | null {
     clientSecret,
     redirectUri: `${baseUrl(c)}/api/auth/callback`,
   };
+}
+
+function truthy(v: string | undefined): boolean {
+  return v === "1" || v?.toLowerCase() === "true";
+}
+
+/**
+ * ログイン時に GASレジストリ用スコープを要求し、リフレッシュトークンを保管する
+ * 方式B が有効かどうか。フラグ + トークン保管先(AUTH_KV) + Google設定が揃って初めて有効。
+ */
+function registryLoginEnabled(c: AppContext): boolean {
+  return (
+    truthy(c.env.REGISTRY_LOGIN_SCOPES) &&
+    !!c.env.AUTH_KV &&
+    googleConfig(c) !== null
+  );
 }
 
 /** 現在のログインユーザー(自前セッション)を返す。無ければ null。 */
@@ -189,57 +210,6 @@ function forbiddenPage(email: string): string {
 </body></html>`;
 }
 
-/**
- * 連携フローのコールバック処理。追加スコープ付きの認可コードをトークン交換し、
- * リフレッシュトークンを暗号化して KV に保管する。
- */
-async function handleConnectCallback(
-  c: AppContext,
-  cfg: GoogleConfig,
-  secret: string,
-  code: string,
-  saved: { verifier: string; redirect: string; email?: string },
-): Promise<Response> {
-  const kv = c.env.AUTH_KV;
-  if (!kv) return c.text("トークン保管用の AUTH_KV が未設定です", 503);
-
-  let tokens;
-  try {
-    tokens = await exchangeCodeForTokens(cfg, code, saved.verifier);
-  } catch {
-    return c.text("Googleトークン交換に失敗しました", 502);
-  }
-  if (!tokens.identity.emailVerified) {
-    return c.text("メールアドレスが未確認のGoogleアカウントです", 403);
-  }
-  const allowlist = await resolveAllowlist(c.env);
-  if (!isAllowed(tokens.identity.email, allowlist)) {
-    return c.html(forbiddenPage(tokens.identity.email), 403);
-  }
-  // 連携開始時のログインアカウントと一致していること(別アカウントの取り違え防止)
-  if (
-    saved.email &&
-    saved.email.toLowerCase() !== tokens.identity.email.toLowerCase()
-  ) {
-    return c.text(
-      "連携しようとしたGoogleアカウントが、ログイン中のアカウントと一致しません。同じアカウントで連携してください。",
-      400,
-    );
-  }
-  if (!tokens.refreshToken) {
-    return c.text(
-      "リフレッシュトークンを取得できませんでした。Googleアカウントのアクセス権限画面 (https://myaccount.google.com/permissions) で本アプリの許可を一度取り消してから、再度連携してください。",
-      400,
-    );
-  }
-  await saveRefreshToken(kv, secret, tokens.identity.email, {
-    refreshToken: tokens.refreshToken,
-    scope: tokens.scope,
-    connectedAt: Date.now(),
-  });
-  return c.redirect(sanitizeRedirect(saved.redirect));
-}
-
 export function createApp(registry: Registry) {
   const app = new Hono<{ Bindings: Env }>();
 
@@ -263,11 +233,15 @@ export function createApp(registry: Registry) {
     const stateToken = await signState({ state, verifier, redirect }, secret);
     setCookie(c, OAUTH_COOKIE, stateToken, cookieOptions(isHttps(c), 600));
 
+    // 方式B有効時は、ログインの同意でDriveスコープも要求し refresh token を得る
+    const withRegistry = registryLoginEnabled(c);
     return c.redirect(
       buildAuthUrl(cfg, {
         state,
         codeChallenge: challenge,
         hostedDomain: c.env.GOOGLE_HOSTED_DOMAIN,
+        scopes: withRegistry ? REGISTRY_SCOPES : undefined,
+        accessType: withRegistry ? "offline" : "online",
       }),
     );
   });
@@ -295,8 +269,6 @@ export function createApp(registry: Registry) {
       state: string;
       verifier: string;
       redirect: string;
-      flow?: string;
-      email?: string;
     }>(stateCookie, secret);
     if (!saved || saved.state !== state) {
       return c.text(
@@ -305,14 +277,20 @@ export function createApp(registry: Registry) {
       );
     }
 
-    // 連携フロー(Drive スコープの追加同意): リフレッシュトークンを暗号化保管する
-    if (saved.flow === "connect") {
-      return handleConnectCallback(c, cfg, secret, code, saved);
-    }
-
+    // 方式B有効時は refresh token も受け取り、後で暗号化保管する
+    const withRegistry = registryLoginEnabled(c);
     let identity;
+    let refreshToken: string | undefined;
+    let grantedScope: string | undefined;
     try {
-      identity = await exchangeCode(cfg, code, saved.verifier);
+      if (withRegistry) {
+        const tokens = await exchangeCodeForTokens(cfg, code, saved.verifier);
+        identity = tokens.identity;
+        refreshToken = tokens.refreshToken;
+        grantedScope = tokens.scope;
+      } else {
+        identity = await exchangeCode(cfg, code, saved.verifier);
+      }
     } catch {
       return c.text("Googleトークン交換に失敗しました", 502);
     }
@@ -323,6 +301,16 @@ export function createApp(registry: Registry) {
     const allowlist = await resolveAllowlist(c.env);
     if (!isAllowed(identity.email, allowlist)) {
       return c.html(forbiddenPage(identity.email), 403);
+    }
+
+    // 本人権限でのGAS列挙用に、リフレッシュトークンを暗号化して保管する。
+    // (返るのは初回同意時のみ。既に保管済みなら再取得不要なので無い場合は据え置き)
+    if (withRegistry && c.env.AUTH_KV && refreshToken) {
+      await saveRefreshToken(c.env.AUTH_KV, secret, identity.email, {
+        refreshToken,
+        scope: grantedScope,
+        connectedAt: Date.now(),
+      });
     }
 
     const ttlHours = sessionTtlHours(c.env);
@@ -478,65 +466,6 @@ export function createApp(registry: Registry) {
     }
   });
 
-  // Phase 2 (方式B): 本人の Google Drive 連携。ログイン中ユーザーだけが開始でき、
-  // 追加スコープ(drive.metadata.readonly / script.deployments.readonly)に同意すると
-  // リフレッシュトークンを暗号化保管する。
-  app.get("/api/registry/connect", async (c) => {
-    const user = await getUser(c);
-    if (!user) return c.json({ error: "認証が必要です" }, 401);
-    const cfg = googleConfig(c);
-    if (!cfg) return c.text("認証が未設定です", 503);
-    if (!c.env.AUTH_KV) {
-      return c.text("トークン保管用の AUTH_KV が未設定です", 503);
-    }
-    const secret = c.env.AUTH_SECRET!;
-    const state = randomString(24);
-    const verifier = randomString(32);
-    const challenge = await pkceChallenge(verifier);
-    const redirect = sanitizeRedirect(c.req.query("redirect"));
-
-    const stateToken = await signState(
-      { state, verifier, redirect, flow: "connect", email: user.email },
-      secret,
-    );
-    setCookie(c, OAUTH_COOKIE, stateToken, cookieOptions(isHttps(c), 600));
-
-    return c.redirect(
-      buildConnectUrl(cfg, {
-        state,
-        codeChallenge: challenge,
-        scopes: REGISTRY_SCOPES,
-        loginHint: user.email,
-        hostedDomain: c.env.GOOGLE_HOSTED_DOMAIN,
-      }),
-    );
-  });
-
-  // 連携状態の取得(画面の連携ボタン表示用)
-  app.get("/api/registry/status", async (c) => {
-    const user = await getUser(c);
-    const available = !!(googleConfig(c) && c.env.AUTH_KV);
-    let connected = false;
-    if (user && c.env.AUTH_KV) {
-      connected = await isConnected(c.env.AUTH_KV, user.email);
-    }
-    return c.json({ authenticated: !!user, available, connected });
-  });
-
-  // 連携解除: 保管トークンを削除し、Google 側でも失効させる
-  app.post("/api/registry/disconnect", async (c) => {
-    const user = await getUser(c);
-    if (!user) return c.json({ error: "認証が必要です" }, 401);
-    const kv = c.env.AUTH_KV;
-    if (!kv) return c.json({ ok: true });
-    const secret = c.env.AUTH_SECRET;
-    if (secret) {
-      const stored = await loadStoredToken(kv, secret, user.email);
-      if (stored?.refreshToken) await revokeToken(stored.refreshToken);
-    }
-    await deleteStoredToken(kv, user.email);
-    return c.json({ ok: true });
-  });
 
   app.all("/api/proxy/:id", async (c) => {
     let targets;

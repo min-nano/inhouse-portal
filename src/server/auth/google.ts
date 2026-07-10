@@ -9,7 +9,6 @@
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 const VALID_ISS = new Set([
   "https://accounts.google.com",
   "accounts.google.com",
@@ -68,51 +67,37 @@ export async function pkceChallenge(verifier: string): Promise<string> {
   return base64urlFromBytes(new Uint8Array(digest));
 }
 
-/** Google の同意画面へのリダイレクトURLを組み立てる */
-export function buildAuthUrl(
-  cfg: GoogleConfig,
-  opts: { state: string; codeChallenge: string; hostedDomain?: string },
-): string {
-  const url = new URL(AUTH_ENDPOINT);
-  url.searchParams.set("client_id", cfg.clientId);
-  url.searchParams.set("redirect_uri", cfg.redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid email profile");
-  url.searchParams.set("state", opts.state);
-  url.searchParams.set("code_challenge", opts.codeChallenge);
-  url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("prompt", "select_account");
-  if (opts.hostedDomain) url.searchParams.set("hd", opts.hostedDomain);
-  return url.toString();
-}
-
 /**
- * 追加スコープの同意画面URL(インクリメンタル認可)を組み立てる。
- * refresh token を得るため access_type=offline + prompt=consent を付け、
- * 既存の許可も維持するため include_granted_scopes=true を付ける。
+ * Google の同意画面へのリダイレクトURLを組み立てる。
+ * `scopes` を渡すと openid/email/profile に追加し、`accessType: "offline"` で
+ * リフレッシュトークンを要求する(初回同意時のみ返る)。
  */
-export function buildConnectUrl(
+export function buildAuthUrl(
   cfg: GoogleConfig,
   opts: {
     state: string;
     codeChallenge: string;
-    scopes: string[];
-    loginHint?: string;
     hostedDomain?: string;
+    scopes?: string[];
+    accessType?: "online" | "offline";
   },
 ): string {
   const url = new URL(AUTH_ENDPOINT);
   url.searchParams.set("client_id", cfg.clientId);
   url.searchParams.set("redirect_uri", cfg.redirectUri);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", ["openid", "email", ...opts.scopes].join(" "));
+  url.searchParams.set(
+    "scope",
+    ["openid", "email", "profile", ...(opts.scopes ?? [])].join(" "),
+  );
   url.searchParams.set("state", opts.state);
   url.searchParams.set("code_challenge", opts.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
-  url.searchParams.set("include_granted_scopes", "true");
-  if (opts.loginHint) url.searchParams.set("login_hint", opts.loginHint);
+  url.searchParams.set("prompt", "select_account");
+  if (opts.accessType === "offline") {
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("include_granted_scopes", "true");
+  }
   if (opts.hostedDomain) url.searchParams.set("hd", opts.hostedDomain);
   return url.toString();
 }
@@ -285,16 +270,3 @@ export async function refreshAccessToken(
   };
 }
 
-/** アクセス/リフレッシュトークンを Google 側で失効させる(連携解除時。ベストエフォート)。 */
-export async function revokeToken(token: string): Promise<boolean> {
-  try {
-    const res = await fetch(REVOKE_ENDPOINT, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token }).toString(),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}

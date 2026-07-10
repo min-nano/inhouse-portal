@@ -28,10 +28,6 @@ const $apps = document.getElementById("apps")!;
 const $status = document.getElementById("status")!;
 const $user = document.getElementById("user")!;
 const $userEmail = document.getElementById("user-email")!;
-const $driveConnect = document.getElementById("drive-connect") as HTMLAnchorElement;
-const $driveDisconnect = document.getElementById(
-  "drive-disconnect",
-) as HTMLButtonElement;
 
 function showStatus(message: string) {
   $status.textContent = message;
@@ -128,40 +124,13 @@ async function loadUser() {
   }
 }
 
-// Drive連携の状態に応じて「連携」/「解除」ボタンを出し分ける
-async function loadDriveStatus() {
-  try {
-    const res = await fetch("/api/registry/status");
-    if (!res.ok) return;
-    const s = (await res.json()) as {
-      authenticated: boolean;
-      available: boolean;
-      connected: boolean;
-    };
-    if (!s.available) return; // 連携機能が未設定の環境では何も出さない
-    $driveConnect.hidden = s.connected;
-    $driveDisconnect.hidden = !s.connected;
-  } catch {
-    // 連携ボタンは必須ではないので失敗は無視
-  }
-}
-
-$driveDisconnect.addEventListener("click", async () => {
-  $driveDisconnect.disabled = true;
-  try {
-    await fetch("/api/registry/disconnect", { method: "POST" });
-  } finally {
-    location.reload();
-  }
-});
-
 function noticeFromSource(source: AppsResponse["source"]): string | null {
   if (!source) return null;
   if (source.appsScriptApiDisabled) {
     return "Apps Script API が未有効です。https://script.google.com/home/usersettings で有効化すると、あなたのGASが自動表示されます。";
   }
   if (source.userAuthExpired) {
-    return "Google Drive連携の有効期限が切れました。再度「Google Driveと連携」してください。";
+    return "Google連携の有効期限が切れました。一度ログアウトして再ログインしてください。";
   }
   if (source.stale) {
     return "GAS一覧の自動取得に一時的に失敗しました。手動登録分のみ表示しています。";
@@ -172,7 +141,6 @@ function noticeFromSource(source: AppsResponse["source"]): string | null {
 async function init() {
   showStatus("読み込み中…");
   loadUser();
-  loadDriveStatus();
   try {
     // 手動台帳(apps.json)と GAS自動取得分をマージした一覧。
     // 連携未設定・取得失敗時も手動分は必ず返る。

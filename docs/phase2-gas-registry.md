@@ -9,15 +9,15 @@
 > - **全員が同じ一覧**を見る(レジストリ実行ユーザーが所有するGAS)
 >
 > **方式B: ユーザーモード(本人権限・per-userアクセス制御)** ↓「per-userで返す」で後述
-> - ログイン中の本人が Google Drive を連携すると、**その人がアクセスできるGASだけ**を
->   本人のOAuthトークンで列挙する(`src/server/google-registry.ts`)
+> - **ログイン時にDriveスコープを要求**(`REGISTRY_LOGIN_SCOPES=1`)し、得た本人のOAuth
+>   トークンで **その人がアクセスできるGASだけ**を列挙する(`src/server/google-registry.ts`)
 > - リフレッシュトークンは AES-256-GCM で暗号化して KV に保管
 >   (`src/server/auth/crypto.ts` / `token-store.ts`)
 >
 > **共通**
 > - 除外・上書き設定: `data/apps.json` の `gasRegistry`(`src/server/registry.ts`)
-> - 画面: `/api/registry` を参照し「自動」バッジ付きで表示。連携ボタンも表示(`web/main.ts`)
-> - 優先順位: 本人が連携済み → 方式B / それ以外で共有レジストリ設定済み → 方式A / どちらも無ければ手動のみ
+> - 画面: `/api/registry` を参照し「自動」バッジ付きで表示(`web/main.ts`)
+> - 優先順位: 本人トークン保管済み → 方式B / それ以外で共有レジストリ設定済み → 方式A / どちらも無ければ手動のみ
 
 ## 背景
 
@@ -118,17 +118,21 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
 ### フロー
 
 ```
-ログイン (email/profile のみ)
-   └─ ポータルで「Google Driveと連携」 → /api/registry/connect
-        └─ Google 同意画面 (追加スコープ, access_type=offline)
-             └─ /api/auth/callback (flow=connect)
-                  └─ refresh_token を AES-256-GCM で暗号化し KV に保管
-/api/registry (連携済みユーザー)
+ログイン (/api/auth/login)  ※REGISTRY_LOGIN_SCOPES=1 のとき
+   └─ Google 同意画面 (openid/email/profile + Driveスコープ, access_type=offline)
+        └─ /api/auth/callback
+             ├─ 通常のセッション発行(従来どおり)
+             └─ refresh_token を AES-256-GCM で暗号化し KV に保管(初回同意時に取得)
+/api/registry (トークン保管済みユーザー)
    └─ refresh_token → access_token へ更新
         └─ Drive: 本人が見えるGASプロジェクトを列挙
              └─ Apps Script API: 各デプロイのWebアプリURLを取得
                   └─ apps.json とマージして返す (per-user 結果, 5分キャッシュ)
 ```
+
+スコープはログイン同意に含めて要求する(opt-inの連携ボタンは設けない)。`access_type=offline`
+だがログイン毎に同意を強制しない(`prompt=select_account`)ため、リフレッシュトークンは
+**初回同意時のみ**返る。以後のログインではセッションのみ更新し、保管済みトークンを使い続ける。
 
 ### スコープ(最小権限・センシティブ)
 
@@ -141,11 +145,13 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
   AES-256-GCM 暗号化して KV に置く(`crypto.ts` / `token-store.ts`)。**KV 単体が漏れても
   復号不可**。`AUTH_SECRET` のローテートで全連携が実質失効する。
 - KVキーは email の SHA-256(平文PIIをキーにしない)。
-- **インクリメンタル認可**: ログインは従来どおり identity のみ。Drive連携は本人が
-  ボタンを押したときだけ(最小権限。使わない人はDrive権限を渡さない)。
-- **連携解除**(`POST /api/registry/disconnect`)で KV から削除し、Google 側でも
-  `revoke` する。リフレッシュが `invalid_grant` になった場合は自動で連携解除。
-- トークンはブラウザに一切出さない(サーバー間でのみ使用)。
+- **ログイン時にスコープ要求**: 環境変数 `REGISTRY_LOGIN_SCOPES=1` を立てると、
+  ログイン同意でDriveスコープも一緒に要求する(opt-inの連携ボタンは無し)。フラグ未設定
+  または `AUTH_KV` 未バインド時は、従来どおり identity のみのログインになる。
+- **自動失効処理**: リフレッシュが `invalid_grant`(取消・無効)になったら、保管トークンを
+  自動削除して手動分へフォールバックし、画面に再ログインを促すヒントを出す。
+- トークンはブラウザに一切出さない(サーバー間でのみ使用)。ユーザー自身の取消は
+  Googleアカウントのアクセス権限画面 (https://myaccount.google.com/permissions) から可能。
 
 ### 運用上の制約(重要)
 

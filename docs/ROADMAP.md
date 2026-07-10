@@ -47,9 +47,9 @@
       (自動取得分には「自動」バッジ)。取得失敗時も手動分は表示(ベストエフォート)
 - [x] 除外リスト・表示名の上書き機構
       (`data/apps.json` の `gasRegistry.exclude` / `gasRegistry.overrides`)
-- [x] 方式B(ユーザーモード): 本人のGoogle Drive連携で、**その人がアクセスできるGASだけ**を
-      本人権限で列挙(per-userアクセス制御)。リフレッシュトークンはAES-256-GCMで暗号化して
-      KV保管、連携解除でrevoke。`/api/registry/connect|status|disconnect`。
+- [x] 方式B(ユーザーモード): **ログイン時にDriveスコープを要求**(`REGISTRY_LOGIN_SCOPES=1`)し、
+      本人権限で **その人がアクセスできるGASだけ**を列挙(per-userアクセス制御)。
+      リフレッシュトークンはAES-256-GCMで暗号化してKV保管、失効時は自動削除。
       ※センシティブスコープのため実質 Workspace メンバー向け(詳細 `docs/phase2-gas-registry.md`)
 
 ## Phase 3: グループウェア機能の拡張 (必要になったものから)

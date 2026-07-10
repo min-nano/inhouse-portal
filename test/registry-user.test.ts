@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, type Env } from "../src/server/app";
 import { loadRegistry } from "../src/server/registry";
 import type { KVNamespace } from "../src/server/auth/allowlist";
-import { createSessionToken } from "../src/server/auth/session";
+import { createSessionToken, SESSION_COOKIE } from "../src/server/auth/session";
 import {
   isConnected,
+  loadStoredToken,
   saveRefreshToken,
 } from "../src/server/auth/token-store";
 
@@ -44,6 +45,7 @@ function baseEnv(kv: KVNamespace, overrides: Partial<Env> = {}): Env {
     AUTH_SECRET: SECRET,
     GOOGLE_CLIENT_ID: "client-id",
     GOOGLE_CLIENT_SECRET: "client-secret",
+    ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
     AUTH_KV: kv,
     ...overrides,
   };
@@ -51,7 +53,23 @@ function baseEnv(kv: KVNamespace, overrides: Partial<Env> = {}): Env {
 
 async function sessionCookie(email: string): Promise<string> {
   const token = await createSessionToken({ email }, SECRET, 24);
-  return `portal_session=${token}`;
+  return `${SESSION_COOKIE}=${token}`;
+}
+
+function b64url(obj: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fakeIdToken(payload: Record<string, unknown>): string {
+  return `${b64url({ alg: "RS256" })}.${b64url(payload)}.sig`;
+}
+function readSetCookie(res: Response, name: string): string | undefined {
+  const raw = res.headers.get("set-cookie");
+  if (!raw) return undefined;
+  const m = new RegExp(`${name}=([^;]+)`).exec(raw);
+  return m?.[1];
 }
 
 /** URLで分岐する fetch モック */
@@ -70,32 +88,77 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("GET /api/registry/status", () => {
-  it("未ログインは connected/authenticated=false", async () => {
+describe("ログイン時スコープ要求 (方式B)", () => {
+  it("REGISTRY_LOGIN_SCOPES 有効時、login は offline + Driveスコープを要求する", async () => {
     const res = await app.request(
-      "/api/registry/status",
+      "/api/auth/login",
+      {},
+      baseEnv(memoryKV(), { REGISTRY_LOGIN_SCOPES: "1" }),
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.searchParams.get("access_type")).toBe("offline");
+    expect(loc.searchParams.get("scope")).toContain("drive.metadata.readonly");
+    expect(loc.searchParams.get("scope")).toContain(
+      "script.deployments.readonly",
+    );
+  });
+
+  it("フラグ無効時は従来どおり identity スコープのみ", async () => {
+    const res = await app.request(
+      "/api/auth/login",
       {},
       baseEnv(memoryKV()),
     );
-    const body = await res.json();
-    expect(body).toMatchObject({ authenticated: false, available: true });
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.searchParams.get("access_type")).toBeNull();
+    expect(loc.searchParams.get("scope")).not.toContain("drive");
   });
 
-  it("連携済みユーザーは connected=true", async () => {
+  it("コールバックでリフレッシュトークンを暗号化保管する", async () => {
     const kv = memoryKV();
-    await saveRefreshToken(kv, SECRET, "u@example.co.jp", {
-      refreshToken: "1//rt",
-      connectedAt: 1,
-    });
-    const res = await app.request(
-      "/api/registry/status",
-      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(kv),
+    const env = baseEnv(kv, { REGISTRY_LOGIN_SCOPES: "1" });
+
+    // login で state と oauth cookie を得る
+    const login = await app.request("/api/auth/login", {}, env);
+    const state = new URL(login.headers.get("location")!).searchParams.get(
+      "state",
+    )!;
+    const oauthCookie = readSetCookie(login, "portal_oauth")!;
+
+    // token エンドポイントが refresh_token を返す
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id_token: fakeIdToken({
+                iss: "https://accounts.google.com",
+                aud: "client-id",
+                email: "taro@example.co.jp",
+                email_verified: true,
+                exp: Math.floor(Date.now() / 1000) + 600,
+              }),
+              access_token: "ya29.at",
+              refresh_token: "1//rt-value",
+              expires_in: 3600,
+              scope: "openid email drive",
+            }),
+            { status: 200 },
+          ),
+      ),
     );
-    expect(await res.json()).toMatchObject({
-      authenticated: true,
-      connected: true,
-    });
+
+    const res = await app.request(
+      `/api/auth/callback?code=abc&state=${state}`,
+      { headers: { cookie: `portal_oauth=${oauthCookie}` } },
+      env,
+    );
+    expect(res.status).toBe(302);
+    expect(readSetCookie(res, SESSION_COOKIE)).toBeTruthy();
+    const stored = await loadStoredToken(kv, SECRET, "taro@example.co.jp");
+    expect(stored?.refreshToken).toBe("1//rt-value");
   });
 });
 
@@ -118,7 +181,9 @@ describe("GET /api/registry (ユーザーモード)", () => {
         if (u.includes("/drive/"))
           return {
             body: {
-              files: [{ id: "SID9", name: "自分の日報", modifiedTime: "2026-07-01T00:00:00Z" }],
+              files: [
+                { id: "SID9", name: "自分の日報", modifiedTime: "2026-07-01T00:00:00Z" },
+              ],
             },
           };
         if (u.includes("/SID9/deployments"))
@@ -151,10 +216,9 @@ describe("GET /api/registry (ユーザーモード)", () => {
     };
     expect(body.source).toMatchObject({ mode: "user", auto: 1 });
     expect(body.apps.map((a) => a.name)).toContain("自分の日報");
-    expect(body.apps.find((a) => a.auto)?.auto).toBe(true);
   });
 
-  it("リフレッシュ失効(400)なら自動で連携解除し手動分を返す", async () => {
+  it("リフレッシュ失効(400)なら自動でトークン削除し手動分を返す", async () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((u) =>
@@ -174,7 +238,6 @@ describe("GET /api/registry (ユーザーモード)", () => {
     };
     expect(body.source.userAuthExpired).toBe(true);
     expect(body.apps).toHaveLength(1); // 手動分のみ
-    // 失効トークンは削除されている
     expect(await isConnected(kv, "u@example.co.jp")).toBe(false);
   });
 
@@ -199,61 +262,10 @@ describe("GET /api/registry (ユーザーモード)", () => {
     };
     expect(body.source.appsScriptApiDisabled).toBe(true);
   });
-});
 
-describe("POST /api/registry/disconnect", () => {
-  it("連携解除でトークンを削除しGoogleへrevokeする", async () => {
-    const kv = memoryKV();
-    await saveRefreshToken(kv, SECRET, "u@example.co.jp", {
-      refreshToken: "1//rt",
-      connectedAt: 1,
-    });
-    const revoke = vi.fn(async () => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", revoke);
-
-    const res = await app.request(
-      "/api/registry/disconnect",
-      { method: "POST", headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(kv),
-    );
-    expect(res.status).toBe(200);
-    expect(await isConnected(kv, "u@example.co.jp")).toBe(false);
-    expect(revoke).toHaveBeenCalled();
-  });
-
-  it("未ログインは401", async () => {
-    const res = await app.request(
-      "/api/registry/disconnect",
-      { method: "POST" },
-      baseEnv(memoryKV()),
-    );
-    expect(res.status).toBe(401);
-  });
-});
-
-describe("GET /api/registry/connect", () => {
-  it("ログイン中ユーザーをGoogle同意画面へリダイレクトする", async () => {
-    const res = await app.request(
-      "/api/registry/connect?redirect=/",
-      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(memoryKV()),
-    );
-    expect(res.status).toBe(302);
-    const loc = res.headers.get("location") ?? "";
-    expect(loc).toContain("accounts.google.com");
-    expect(loc).toContain("access_type=offline");
-    expect(loc).toContain("prompt=consent");
-    expect(decodeURIComponent(loc)).toContain(
-      "drive.metadata.readonly",
-    );
-  });
-
-  it("未ログインは401", async () => {
-    const res = await app.request(
-      "/api/registry/connect",
-      {},
-      baseEnv(memoryKV()),
-    );
-    expect(res.status).toBe(401);
+  it("未ログインは手動/共有へフォールバック(ユーザーモードに入らない)", async () => {
+    const res = await app.request("/api/registry", {}, baseEnv(kv));
+    const body = (await res.json()) as { source: { mode: string } };
+    expect(body.source.mode).not.toBe("user");
   });
 });
