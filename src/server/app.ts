@@ -305,8 +305,8 @@ export function createApp(registry: Registry) {
       return c.text("メールアドレスが未確認のGoogleアカウントです", 403);
     }
 
-    const allowlist = await resolveAllowlist(c.env);
-    if (!isAllowed(identity.email, allowlist)) {
+    const allowlist = await resolveAllowlist(c.env, secret);
+    if (!(await isAllowed(identity.email, allowlist, secret))) {
       return c.html(forbiddenPage(identity.email), 403);
     }
 
@@ -437,7 +437,7 @@ export function createApp(registry: Registry) {
             err instanceof TokenInvalidError ||
             (err instanceof TokenRefreshError && err.isInvalidGrant);
           if (expired) {
-            await deleteStoredToken(c.env.AUTH_KV, user.email);
+            await deleteStoredToken(c.env.AUTH_KV, secret, user.email);
             return manualOnly({ mode: "user", userAuthExpired: true });
           }
           if (err instanceof AppsScriptForbiddenError) {

@@ -7,7 +7,7 @@
  * - 連携解除で delete。AUTH_SECRET のローテートでも(復号不能になり)実質失効する。
  */
 import type { KVNamespace } from "./allowlist";
-import { decryptString, encryptString, sha256hex } from "./crypto";
+import { decryptString, encryptString, hmacSha256Hex } from "./crypto";
 
 const KEY_PREFIX = "gtoken:";
 
@@ -18,8 +18,15 @@ export type StoredToken = {
   connectedAt: number;
 };
 
-async function kvKey(email: string): Promise<string> {
-  return KEY_PREFIX + (await sha256hex(email.trim().toLowerCase()));
+/**
+ * KV キー。email を AUTH_SECRET 由来の HMAC でハッシュ化する(平文PIIを使わず、
+ * かつ候補メールの総当たりで連携有無を判定されないようにする)。用途プレフィックスで
+ * 許可リストのハッシュとも相関しないようにする。
+ */
+async function kvKey(email: string, secret: string): Promise<string> {
+  return (
+    KEY_PREFIX + (await hmacSha256Hex(secret, `gtoken:${email.trim().toLowerCase()}`))
+  );
 }
 
 /** リフレッシュトークンを暗号化して保存する。 */
@@ -30,7 +37,7 @@ export async function saveRefreshToken(
   record: StoredToken,
 ): Promise<void> {
   const blob = await encryptString(JSON.stringify(record), secret);
-  await kv.put(await kvKey(email), blob);
+  await kv.put(await kvKey(email, secret), blob);
 }
 
 /** 保存済みトークンレコードを復号して返す。無い/復号失敗は null。 */
@@ -39,7 +46,7 @@ export async function loadStoredToken(
   secret: string,
   email: string,
 ): Promise<StoredToken | null> {
-  const blob = await kv.get(await kvKey(email));
+  const blob = await kv.get(await kvKey(email, secret));
   if (!blob) return null;
   const json = await decryptString(blob, secret);
   if (!json) return null;
@@ -55,15 +62,17 @@ export async function loadStoredToken(
 /** 連携状態(トークン保存の有無)だけを軽く確認する。 */
 export async function isConnected(
   kv: KVNamespace,
+  secret: string,
   email: string,
 ): Promise<boolean> {
-  return (await kv.get(await kvKey(email))) !== null;
+  return (await kv.get(await kvKey(email, secret))) !== null;
 }
 
 /** 保存済みトークンを削除する(連携解除)。 */
 export async function deleteStoredToken(
   kv: KVNamespace,
+  secret: string,
   email: string,
 ): Promise<void> {
-  await kv.delete(await kvKey(email));
+  await kv.delete(await kvKey(email, secret));
 }

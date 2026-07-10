@@ -71,14 +71,26 @@ describe("token-store", () => {
 
   it("isConnected と delete が機能する", async () => {
     const kv = memoryKV();
-    expect(await isConnected(kv, "a@b.com")).toBe(false);
+    expect(await isConnected(kv, SECRET, "a@b.com")).toBe(false);
     await saveRefreshToken(kv, SECRET, "a@b.com", {
       refreshToken: "x",
       connectedAt: 1,
     });
-    expect(await isConnected(kv, "a@b.com")).toBe(true);
-    await deleteStoredToken(kv, "a@b.com");
-    expect(await isConnected(kv, "a@b.com")).toBe(false);
+    expect(await isConnected(kv, SECRET, "a@b.com")).toBe(true);
+    await deleteStoredToken(kv, SECRET, "a@b.com");
+    expect(await isConnected(kv, SECRET, "a@b.com")).toBe(false);
     expect(await loadStoredToken(kv, SECRET, "a@b.com")).toBeNull();
+  });
+
+  it("別のsecretでは同じemailでも別キー(連携有無を秘匿)", async () => {
+    const kv = memoryKV();
+    await saveRefreshToken(kv, SECRET, "a@b.com", {
+      refreshToken: "x",
+      connectedAt: 1,
+    });
+    // 異なる secret では鍵が変わるので見つからない
+    expect(await isConnected(kv, "different-secret-value", "a@b.com")).toBe(
+      false,
+    );
   });
 });

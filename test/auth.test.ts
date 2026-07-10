@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type Env } from "../src/server/app";
 import { loadRegistry } from "../src/server/registry";
 import {
+  allowlistEmailHash,
   isAllowed,
   loadAllowlistFromKV,
-  matchesPattern,
-  parseAllowlistEnv,
+  matchesDomain,
+  parseDomainsEnv,
+  parseEmailsEnv,
   resolveAllowlist,
   type KVNamespace,
 } from "../src/server/auth/allowlist";
@@ -72,45 +74,56 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("matchesPattern", () => {
-  it("ワイルドカードでドメイン全体に一致する", () => {
-    expect(matchesPattern("taro@example.co.jp", "*@example.co.jp")).toBe(true);
-    expect(matchesPattern("taro@evil.com", "*@example.co.jp")).toBe(false);
+describe("matchesDomain", () => {
+  it("ドメイン完全一致(大文字小文字無視)", () => {
+    expect(matchesDomain("taro@example.co.jp", "example.co.jp")).toBe(true);
+    expect(matchesDomain("Taro@Example.CO.JP", "example.co.jp")).toBe(true);
+    expect(matchesDomain("taro@evil.com", "example.co.jp")).toBe(false);
   });
 
-  it("大文字小文字を無視する", () => {
-    expect(matchesPattern("Taro@Example.CO.JP", "*@example.co.jp")).toBe(true);
+  it("*.domain はサブドメインのみ(apexは含めない)", () => {
+    expect(matchesDomain("a@team.example.co.jp", "*.example.co.jp")).toBe(true);
+    expect(matchesDomain("a@example.co.jp", "*.example.co.jp")).toBe(false);
   });
 
-  it("ワイルドカード無しは完全一致", () => {
-    expect(matchesPattern("foo@partner.com", "foo@partner.com")).toBe(true);
-    expect(matchesPattern("foobar@partner.com", "foo@partner.com")).toBe(false);
-  });
-
-  it("サブドメインにもワイルドカードを使える", () => {
-    expect(matchesPattern("a@team.example.co.jp", "*@*.example.co.jp")).toBe(
-      true,
-    );
-    expect(matchesPattern("a@example.co.jp", "*@*.example.co.jp")).toBe(false);
-  });
-
-  it("空パターンには一致しない", () => {
-    expect(matchesPattern("a@b.com", "")).toBe(false);
+  it("空は一致しない", () => {
+    expect(matchesDomain("a@b.com", "")).toBe(false);
+    expect(matchesDomain("noemail", "b.com")).toBe(false);
   });
 });
 
-describe("parseAllowlistEnv / isAllowed", () => {
-  it("カンマ・空白区切りを正規化する", () => {
+describe("parseDomainsEnv / parseEmailsEnv", () => {
+  it("ドメイン形式を正規化する(*@ / @ を剥がす)", () => {
     expect(
-      parseAllowlistEnv("*@example.co.jp, foo@partner.com", " bar@x.com"),
-    ).toEqual(["*@example.co.jp", "foo@partner.com", "bar@x.com"]);
+      parseDomainsEnv("*@example.co.jp, @foo.com", " bar.com *.sub.com"),
+    ).toEqual(["example.co.jp", "foo.com", "bar.com", "*.sub.com"]);
   });
 
-  it("いずれかに一致すれば許可", () => {
-    const list = ["*@example.co.jp", "foo@partner.com"];
-    expect(isAllowed("anyone@example.co.jp", list)).toBe(true);
-    expect(isAllowed("foo@partner.com", list)).toBe(true);
-    expect(isAllowed("stranger@nope.com", list)).toBe(false);
+  it("個別メールだけ取り出す(ドメインのみは無視)", () => {
+    expect(parseEmailsEnv("foo@partner.com, example.co.jp", "x")).toEqual([
+      "foo@partner.com",
+    ]);
+  });
+});
+
+describe("isAllowed", () => {
+  it("ドメイン一致で許可", async () => {
+    const allow = await resolveAllowlist(
+      { ALLOWED_EMAIL_DOMAINS: "example.co.jp" },
+      SECRET,
+    );
+    expect(await isAllowed("anyone@example.co.jp", allow, SECRET)).toBe(true);
+    expect(await isAllowed("x@nope.com", allow, SECRET)).toBe(false);
+  });
+
+  it("env の個別メール(ハッシュ照合)で許可", async () => {
+    const allow = await resolveAllowlist(
+      { ALLOWED_EMAILS: "foo@partner.com" },
+      SECRET,
+    );
+    expect(await isAllowed("foo@partner.com", allow, SECRET)).toBe(true);
+    expect(await isAllowed("FOO@partner.com", allow, SECRET)).toBe(true); // 正規化
+    expect(await isAllowed("bar@partner.com", allow, SECRET)).toBe(false);
   });
 });
 
@@ -123,33 +136,54 @@ describe("loadAllowlistFromKV / resolveAllowlist", () => {
     };
   }
 
-  it("JSON配列を読む", async () => {
-    expect(
-      await loadAllowlistFromKV(fakeKV('["*@example.co.jp","x@y.com"]')),
-    ).toEqual(["*@example.co.jp", "x@y.com"]);
-  });
-
-  it("{patterns:[...]} 形式も読む", async () => {
-    expect(
-      await loadAllowlistFromKV(fakeKV('{"patterns":["a@b.com"]}')),
-    ).toEqual(["a@b.com"]);
-  });
-
-  it("未設定・不正JSONは空配列", async () => {
-    expect(await loadAllowlistFromKV(fakeKV(null))).toEqual([]);
-    expect(await loadAllowlistFromKV(fakeKV("{not json"))).toEqual([]);
-    expect(await loadAllowlistFromKV(undefined)).toEqual([]);
-  });
-
-  it("env と KV を統合(重複除去)する", async () => {
-    const list = await resolveAllowlist({
-      ALLOWED_EMAILS: "foo@partner.com",
-      ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
-      AUTH_KV: fakeKV('["bar@partner.com","*@example.co.jp"]'),
-    });
-    expect(list.sort()).toEqual(
-      ["*@example.co.jp", "bar@partner.com", "foo@partner.com"].sort(),
+  it("新形式 { domains, emailHashes } を読む", async () => {
+    const hash = await allowlistEmailHash("kv@partner.com", SECRET);
+    const kv = fakeKV(
+      JSON.stringify({ domains: ["*@example.co.jp"], emailHashes: [hash] }),
     );
+    const loaded = await loadAllowlistFromKV(kv);
+    expect(loaded.domains).toEqual(["example.co.jp"]);
+    expect(loaded.emailHashes).toEqual([hash]);
+  });
+
+  it("後方互換: 文字列配列(ドメイン/平文メールを振り分け)", async () => {
+    const loaded = await loadAllowlistFromKV(
+      fakeKV('["*@example.co.jp","x@y.com"]'),
+    );
+    expect(loaded.domains).toEqual(["example.co.jp"]);
+    expect(loaded.legacyEmails).toEqual(["x@y.com"]);
+  });
+
+  it("未設定・不正JSONは空", async () => {
+    const empty = { domains: [], emailHashes: [], legacyEmails: [] };
+    expect(await loadAllowlistFromKV(fakeKV(null))).toEqual(empty);
+    expect(await loadAllowlistFromKV(fakeKV("{not json"))).toEqual(empty);
+    expect(await loadAllowlistFromKV(undefined)).toEqual(empty);
+  });
+
+  it("KV のハッシュ済み個別メールで許可され、平文はKVに出ない", async () => {
+    const hash = await allowlistEmailHash("kv@partner.com", SECRET);
+    const kv = fakeKV(JSON.stringify({ domains: [], emailHashes: [hash] }));
+    const allow = await resolveAllowlist({ AUTH_KV: kv }, SECRET);
+    expect(await isAllowed("kv@partner.com", allow, SECRET)).toBe(true);
+    expect(await isAllowed("other@partner.com", allow, SECRET)).toBe(false);
+    // ハッシュは email 平文を含まない
+    expect(hash).not.toContain("kv@partner.com");
+  });
+
+  it("env と KV(新旧混在)を統合する", async () => {
+    const allow = await resolveAllowlist(
+      {
+        ALLOWED_EMAILS: "foo@partner.com",
+        ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
+        AUTH_KV: fakeKV('["bar@partner.com"]'), // 後方互換の平文
+      },
+      SECRET,
+    );
+    expect(await isAllowed("anyone@example.co.jp", allow, SECRET)).toBe(true);
+    expect(await isAllowed("foo@partner.com", allow, SECRET)).toBe(true);
+    expect(await isAllowed("bar@partner.com", allow, SECRET)).toBe(true);
+    expect(await isAllowed("stranger@nope.com", allow, SECRET)).toBe(false);
   });
 });
 

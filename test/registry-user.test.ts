@@ -199,7 +199,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
       env,
     );
     expect(res.status).toBe(302); // ログイン自体は成功
-    expect(await isConnected(kv, "taro@example.co.jp")).toBe(false); // 保管はしない
+    expect(await isConnected(kv, SECRET, "taro@example.co.jp")).toBe(false); // 保管はしない
   });
 
   it("?reconnect=1 のログインは prompt=consent を付ける", async () => {
@@ -289,7 +289,7 @@ describe("GET /api/registry (ユーザーモード)", () => {
     };
     expect(body.source.userAuthExpired).toBe(true);
     expect(body.apps).toHaveLength(1); // 手動分のみ
-    expect(await isConnected(kv, "u@example.co.jp")).toBe(false);
+    expect(await isConnected(kv, SECRET, "u@example.co.jp")).toBe(false);
   });
 
   it("一時的なリフレッシュ失敗(invalid_client/401)ではトークンを削除しない", async () => {
@@ -312,7 +312,7 @@ describe("GET /api/registry (ユーザーモード)", () => {
     expect(body.source.stale).toBe(true);
     expect(body.source.userAuthExpired).toBeUndefined();
     // 設定ミス由来なので保管トークンは残す(復旧可能にする)
-    expect(await isConnected(kv, "u@example.co.jp")).toBe(true);
+    expect(await isConnected(kv, SECRET, "u@example.co.jp")).toBe(true);
   });
 
   it("Apps Script API 未有効(全403)なら手動分+ヒントを返す", async () => {

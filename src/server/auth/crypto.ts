@@ -89,13 +89,42 @@ export async function decryptString(
   }
 }
 
-/** email 等を KV キー用にSHA-256(hex)化する(平文PIIをキーに使わない)。 */
+/** SHA-256(hex)。キャッシュキー等、秘密性を要さないハッシュに使う。 */
 export async function sha256hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(input),
   );
-  return Array.from(new Uint8Array(digest))
+  return toHex(new Uint8Array(digest));
+}
+
+/**
+ * HMAC-SHA256(hex)。鍵は AUTH_SECRET。KV に置く識別子(許可リストの個別メール、
+ * トークンのキー)を **鍵付きハッシュ**にすることで、KV 閲覧者が候補メールを
+ * 総当たりしても(AUTH_SECRET を知らない限り)一致判定できないようにする。
+ * message に用途プレフィックスを付けて、用途間でハッシュが相関しないようにする。
+ */
+export async function hmacSha256Hex(
+  secret: string,
+  message: string,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(message),
+  );
+  return toHex(new Uint8Array(sig));
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }

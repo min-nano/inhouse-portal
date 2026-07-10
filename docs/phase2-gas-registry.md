@@ -144,7 +144,8 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
 - **リフレッシュトークンは平文で保存しない**。`AUTH_SECRET` から HKDF で導出した鍵で
   AES-256-GCM 暗号化して KV に置く(`crypto.ts` / `token-store.ts`)。**KV 単体が漏れても
   復号不可**。`AUTH_SECRET` のローテートで全連携が実質失効する。
-- KVキーは email の SHA-256(平文PIIをキーにしない)。
+- KVキーは email の **HMAC-SHA256(AUTH_SECRET 由来)**。平文PIIを使わず、かつ候補メールの
+  総当たりで連携有無を判定されないようにする(許可リストの `emailHashes` と同方式)。
 - **ログイン時にスコープ要求**: 環境変数 `REGISTRY_LOGIN_SCOPES=1` を立てると、
   ログイン同意でDriveスコープも一緒に要求する(opt-inの連携ボタンは無し)。フラグ未設定
   または `AUTH_KV` 未バインド時は、従来どおり identity のみのログインになる。

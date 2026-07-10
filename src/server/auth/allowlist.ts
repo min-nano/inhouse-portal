@@ -1,14 +1,18 @@
 /**
  * ログイン許可リスト。
  *
- * - エントリはメールアドレスのパターン。`*` を任意長のワイルドカードとして使える
- *   (全文一致・大文字小文字無視)。例:
- *     "*@example.co.jp"    … example.co.jp ドメインの全員 (社内)
- *     "taro@partner.com"   … 個別の協力者
- *     "*@*.example.co.jp"  … サブドメイン配下も許可
- * - ソースは env(ベースライン) と KV(運用中に追加・失効する分) の和集合。
- *   KV を使うとデプロイ無しでダッシュボードから許可リストを編集できる。
+ * 機密度で2種類に分ける:
+ * - **ドメイン**(例 `example.co.jp` / `*.example.co.jp`): 個人を特定しない低機密情報。
+ *   env・KV とも平文で持つ。
+ * - **個別メール**: PII で列挙されると困る。env(暗号化されたsecret変数)には平文で
+ *   置いてよいが、**KV には平文で置かない**。`HMAC-SHA256(AUTH_SECRET, "allowlist:"+email)`
+ *   のハッシュで保存し、KV 閲覧者が候補メールを総当たりしても
+ *   (AUTH_SECRET を知らない限り)一致判定できないようにする。
+ *
+ * 最終的な許可リストは env と KV の和集合。KV はデプロイ無しで編集できるので、
+ * 流動的な協力者の出入りに向く(ハッシュは `scripts/allowlist-hash.mjs` で算出)。
  */
+import { hmacSha256Hex } from "./crypto";
 
 /** このコードが使う範囲だけの最小 KV 型 (@cloudflare/workers-types を持ち込まない) */
 export interface KVNamespace {
@@ -23,75 +27,195 @@ export interface KVNamespace {
 
 export const ALLOWLIST_KEY = "allowlist";
 
-/** env の文字列(カンマ/空白区切り)を正規化したパターン配列にする */
-export function parseAllowlistEnv(
-  ...raws: (string | undefined)[]
-): string[] {
+/** 解決済みの許可リスト。 */
+export type Allowlist = {
+  /** 正規化済みドメインルール。"example.co.jp"(完全一致) or "*.example.co.jp"(サブドメイン) */
+  domains: string[];
+  /** 許可された個別メールの HMAC ハッシュ(hex)。 */
+  emailHashes: Set<string>;
+};
+
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** メールのドメイン部(最後の @ 以降)を小文字で返す。 */
+function emailDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at === -1 ? "" : email.slice(at + 1).trim().toLowerCase();
+}
+
+/** 許可リスト用の個別メールハッシュ。KV に入れる値と同じ算出方法。 */
+export async function allowlistEmailHash(
+  email: string,
+  secret: string,
+): Promise<string> {
+  return hmacSha256Hex(secret, `allowlist:${normalizeEmail(email)}`);
+}
+
+/**
+ * ドメインルールの正規化。以下をすべて "example.co.jp" に、
+ * `*@*.example.co.jp` / `*.example.co.jp` を "*.example.co.jp" に落とす。
+ *   "example.co.jp" / "@example.co.jp" / "*@example.co.jp"
+ * 個別メール(local@domain 形式)は null を返す(ドメインではない)。
+ */
+export function normalizeDomainRule(entry: string): string | null {
+  let e = entry.trim().toLowerCase();
+  if (!e) return null;
+  if (e.startsWith("*@")) e = e.slice(2);
+  else if (e.startsWith("@")) e = e.slice(1);
+  // ここで local 部が残っていれば(= まだ @ を含む)個別メール扱い
+  if (e.includes("@")) return null;
+  if (!e) return null;
+  return e; // "example.co.jp" or "*.example.co.jp"
+}
+
+/** env 文字列(カンマ/空白区切り)をドメインルール配列にする。 */
+export function parseDomainsEnv(...raws: (string | undefined)[]): string[] {
   const out: string[] = [];
   for (const raw of raws) {
     if (!raw) continue;
     for (const entry of raw.split(/[,\s]+/)) {
-      const trimmed = entry.trim().toLowerCase();
-      if (trimmed) out.push(trimmed);
+      const rule = normalizeDomainRule(entry);
+      if (rule) out.push(rule);
     }
   }
   return out;
 }
 
+/** env 文字列を個別メール(正規化済み)配列にする。 */
+export function parseEmailsEnv(...raws: (string | undefined)[]): string[] {
+  const out: string[] = [];
+  for (const raw of raws) {
+    if (!raw) continue;
+    for (const entry of raw.split(/[,\s]+/)) {
+      const e = normalizeEmail(entry);
+      if (e && e.includes("@")) out.push(e);
+    }
+  }
+  return out;
+}
+
+type KVAllowlist = { domains: string[]; emailHashes: string[]; legacyEmails: string[] };
+
 /**
- * KV に保存された許可リストを読む。
- * 値は JSON の文字列配列 `["*@example.co.jp", ...]`、または
- * `{ "patterns": [...] }` のどちらでも受け付ける。未設定・不正は空配列。
+ * KV の許可リストを読む。推奨の新形式:
+ *   { "domains": ["example.co.jp"], "emailHashes": ["<hex>", ...] }
+ * 後方互換: 文字列配列 / `{ patterns: [...] }` も受ける。各要素はドメインなら
+ * domains、個別メール(平文)なら legacyEmails に振り分ける(後でハッシュ化して照合)。
+ * 未設定・不正JSONは空。
  */
 export async function loadAllowlistFromKV(
   kv: KVNamespace | undefined,
-): Promise<string[]> {
-  if (!kv) return [];
+): Promise<KVAllowlist> {
+  const empty: KVAllowlist = { domains: [], emailHashes: [], legacyEmails: [] };
+  if (!kv) return empty;
   const raw = await kv.get(ALLOWLIST_KEY);
-  if (!raw) return [];
+  if (!raw) return empty;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [];
+    return empty;
   }
-  const list = Array.isArray(parsed)
-    ? parsed
-    : parsed !== null &&
-        typeof parsed === "object" &&
-        Array.isArray((parsed as { patterns?: unknown }).patterns)
-      ? (parsed as { patterns: unknown[] }).patterns
-      : [];
-  return list
-    .filter((x): x is string => typeof x === "string")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+
+  const asStringArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
+  // 新形式
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const obj = parsed as {
+      domains?: unknown;
+      emailHashes?: unknown;
+      patterns?: unknown;
+    };
+    if (obj.domains !== undefined || obj.emailHashes !== undefined) {
+      return {
+        domains: asStringArray(obj.domains)
+          .map((s) => normalizeDomainRule(s))
+          .filter((s): s is string => !!s),
+        emailHashes: asStringArray(obj.emailHashes).map((s) =>
+          s.trim().toLowerCase(),
+        ),
+        legacyEmails: [],
+      };
+    }
+    // 後方互換 { patterns: [...] }
+    return classifyLegacy(asStringArray(obj.patterns));
+  }
+
+  // 後方互換: 文字列配列
+  return classifyLegacy(asStringArray(parsed));
 }
 
-/** env と KV を統合した許可リストを返す(重複除去) */
-export async function resolveAllowlist(env: {
-  ALLOWED_EMAIL_DOMAINS?: string;
-  ALLOWED_EMAILS?: string;
-  AUTH_KV?: KVNamespace;
-}): Promise<string[]> {
-  const fromEnv = parseAllowlistEnv(env.ALLOWED_EMAIL_DOMAINS, env.ALLOWED_EMAILS);
+/** 旧形式のエントリをドメイン/平文メールに振り分ける。 */
+function classifyLegacy(entries: string[]): KVAllowlist {
+  const domains: string[] = [];
+  const legacyEmails: string[] = [];
+  for (const entry of entries) {
+    const domainRule = normalizeDomainRule(entry);
+    if (domainRule) domains.push(domainRule);
+    else {
+      const e = normalizeEmail(entry);
+      if (e.includes("@")) legacyEmails.push(e);
+    }
+  }
+  return { domains, emailHashes: [], legacyEmails };
+}
+
+/**
+ * env と KV を統合した許可リストを返す。個別メールはすべて HMAC ハッシュに揃える
+ * (env の平文メール・KV の平文(後方互換)は resolve 時にハッシュ化)。
+ */
+export async function resolveAllowlist(
+  env: {
+    ALLOWED_EMAIL_DOMAINS?: string;
+    ALLOWED_EMAILS?: string;
+    AUTH_KV?: KVNamespace;
+  },
+  secret: string,
+): Promise<Allowlist> {
   const fromKV = await loadAllowlistFromKV(env.AUTH_KV);
-  return [...new Set([...fromEnv, ...fromKV])];
+
+  const domains = [
+    ...new Set([
+      ...parseDomainsEnv(env.ALLOWED_EMAIL_DOMAINS, env.ALLOWED_EMAILS),
+      ...fromKV.domains,
+    ]),
+  ];
+
+  // env の個別メール + KV の平文(後方互換)をハッシュ化し、KV の emailHashes と統合
+  const plaintextEmails = [
+    ...parseEmailsEnv(env.ALLOWED_EMAILS, env.ALLOWED_EMAIL_DOMAINS),
+    ...fromKV.legacyEmails,
+  ];
+  const hashed = await Promise.all(
+    plaintextEmails.map((e) => allowlistEmailHash(e, secret)),
+  );
+  const emailHashes = new Set([...fromKV.emailHashes, ...hashed]);
+
+  return { domains, emailHashes };
 }
 
-/** 1件のパターンに対する一致判定 (`*` は任意長・全文一致・大文字小文字無視) */
-export function matchesPattern(email: string, pattern: string): boolean {
-  const e = email.trim().toLowerCase();
-  const p = pattern.trim().toLowerCase();
-  if (!e || !p) return false;
-  if (!p.includes("*")) return e === p;
-  const escaped = p
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`).test(e);
+/** email のドメインが1つのドメインルールに一致するか。 */
+export function matchesDomain(email: string, rule: string): boolean {
+  const d = emailDomain(email);
+  if (!d || !rule) return false;
+  if (rule.startsWith("*.")) {
+    // サブドメインのみ(apex は含めない)。"*.example.co.jp" → ".example.co.jp"
+    return d.endsWith(rule.slice(1)) && d !== rule.slice(2);
+  }
+  return d === rule;
 }
 
-/** email が許可リストのいずれかに一致するか */
-export function isAllowed(email: string, patterns: string[]): boolean {
-  return patterns.some((p) => matchesPattern(email, p));
+/** email が許可リストに含まれるか(ドメイン一致 or 個別メールのハッシュ一致)。 */
+export async function isAllowed(
+  email: string,
+  allowlist: Allowlist,
+  secret: string,
+): Promise<boolean> {
+  if (allowlist.domains.some((rule) => matchesDomain(email, rule))) return true;
+  if (allowlist.emailHashes.size === 0) return false;
+  const hash = await allowlistEmailHash(email, secret);
+  return allowlist.emailHashes.has(hash);
 }
