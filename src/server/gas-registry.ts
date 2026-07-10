@@ -10,6 +10,25 @@
  */
 import { z } from "zod";
 import type { AppEntry, GasRegistryConfig } from "./registry";
+import { sha256hex } from "./auth/crypto";
+
+/**
+ * 自動取得エントリの url に許可するホスト。レジストリGAS(共有)が侵害されても、
+ * 任意の https リンクが「自動」バッジ付きの信頼された見た目で並ぶのを防ぐ。
+ * GAS WebアプリURLは script.google.com、実行結果は script.googleusercontent.com。
+ */
+const ALLOWED_AUTO_HOSTS = new Set([
+  "script.google.com",
+  "script.googleusercontent.com",
+]);
+
+function isAllowedAutoUrl(url: string): boolean {
+  try {
+    return ALLOWED_AUTO_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
 
 /** GASレジストリが返す1エントリ */
 export const GasAppSchema = z.object({
@@ -91,6 +110,8 @@ export function mergeAutoApps(
 
   for (const gasApp of autoApps) {
     if (excluded.has(gasApp.scriptId)) continue;
+    // GAS由来でない url は信頼できないので除外(侵害されたレジストリ対策)
+    if (!isAllowedAutoUrl(gasApp.url)) continue;
     const override = config.overrides[gasApp.scriptId];
     if (override?.hidden) continue;
     if (manualUrls.has(normalizeUrl(gasApp.url))) continue;
@@ -137,7 +158,11 @@ export async function fetchGasRegistry(
   opts: { cacheSeconds?: number } = {},
 ): Promise<GasRegistryResponse> {
   const cacheSeconds = opts.cacheSeconds ?? REGISTRY_CACHE_SECONDS;
-  const cacheKey = new Request(url, { method: "GET" });
+  // url は ?token=秘密 を含み得るので、そのままキャッシュキーにしない。
+  // ハッシュした合成キーにすることで、秘密のローテート時に残留キャッシュも避けられる。
+  const cacheKey = new Request(
+    `https://portal.internal/registry/shared/${await sha256hex(url)}`,
+  );
   const cache = edgeCache();
 
   if (cache) {

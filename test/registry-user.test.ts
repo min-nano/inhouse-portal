@@ -143,7 +143,8 @@ describe("ログイン時スコープ要求 (方式B)", () => {
               access_token: "ya29.at",
               refresh_token: "1//rt-value",
               expires_in: 3600,
-              scope: "openid email drive",
+              scope:
+                "openid email https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/script.deployments.readonly",
             }),
             { status: 200 },
           ),
@@ -159,6 +160,56 @@ describe("ログイン時スコープ要求 (方式B)", () => {
     expect(readSetCookie(res, SESSION_COOKIE)).toBeTruthy();
     const stored = await loadStoredToken(kv, SECRET, "taro@example.co.jp");
     expect(stored?.refreshToken).toBe("1//rt-value");
+  });
+
+  it("granular consent でDriveスコープを外された場合はトークンを保管しない", async () => {
+    const kv = memoryKV();
+    const env = baseEnv(kv, { REGISTRY_LOGIN_SCOPES: "1" });
+    const login = await app.request("/api/auth/login", {}, env);
+    const state = new URL(login.headers.get("location")!).searchParams.get(
+      "state",
+    )!;
+    const oauthCookie = readSetCookie(login, "portal_oauth")!;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id_token: fakeIdToken({
+                iss: "https://accounts.google.com",
+                aud: "client-id",
+                email: "taro@example.co.jp",
+                email_verified: true,
+                exp: Math.floor(Date.now() / 1000) + 600,
+              }),
+              access_token: "ya29.at",
+              refresh_token: "1//rt-value",
+              expires_in: 3600,
+              scope: "openid email", // Driveスコープを外された
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    const res = await app.request(
+      `/api/auth/callback?code=abc&state=${state}`,
+      { headers: { cookie: `portal_oauth=${oauthCookie}` } },
+      env,
+    );
+    expect(res.status).toBe(302); // ログイン自体は成功
+    expect(await isConnected(kv, "taro@example.co.jp")).toBe(false); // 保管はしない
+  });
+
+  it("?reconnect=1 のログインは prompt=consent を付ける", async () => {
+    const res = await app.request(
+      "/api/auth/login?reconnect=1",
+      {},
+      baseEnv(memoryKV(), { REGISTRY_LOGIN_SCOPES: "1" }),
+    );
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.searchParams.get("prompt")).toBe("consent");
   });
 });
 
@@ -239,6 +290,29 @@ describe("GET /api/registry (ユーザーモード)", () => {
     expect(body.source.userAuthExpired).toBe(true);
     expect(body.apps).toHaveLength(1); // 手動分のみ
     expect(await isConnected(kv, "u@example.co.jp")).toBe(false);
+  });
+
+  it("一時的なリフレッシュ失敗(invalid_client/401)ではトークンを削除しない", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routeFetch((u) =>
+        u.includes("oauth2.googleapis.com/token")
+          ? { status: 401, body: { error: "invalid_client" } }
+          : undefined,
+      ),
+    );
+    const res = await app.request(
+      "/api/registry",
+      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
+      baseEnv(kv),
+    );
+    const body = (await res.json()) as {
+      source: { stale?: boolean; userAuthExpired?: boolean };
+    };
+    expect(body.source.stale).toBe(true);
+    expect(body.source.userAuthExpired).toBeUndefined();
+    // 設定ミス由来なので保管トークンは残す(復旧可能にする)
+    expect(await isConnected(kv, "u@example.co.jp")).toBe(true);
   });
 
   it("Apps Script API 未有効(全403)なら手動分+ヒントを返す", async () => {

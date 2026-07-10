@@ -105,6 +105,36 @@ export class AppsScriptForbiddenError extends Error {
 }
 
 /**
+ * 1リクエストで照会するGASプロジェクト数の上限。Cloudflare 無料プランの
+ * 50サブリクエスト/リクエスト制限を超えないための安全弁(Drive一覧+各デプロイ照会)。
+ * Drive は modifiedTime 降順なので、超過時は「最近更新されたもの」が優先される。
+ */
+export const MAX_PROJECTS = 40;
+/** デプロイ照会の同時実行数(レイテンシ短縮しつつ上流に優しく) */
+const DEPLOYMENT_CONCURRENCY = 6;
+
+/** 配列を同時実行数を絞って map する。 */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]!);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+}
+
+/**
  * 本人権限で GASプロジェクトを列挙し、Webアプリとしてデプロイ済みのものを
  * GasApp[] で返す。
  *
@@ -113,35 +143,49 @@ export class AppsScriptForbiddenError extends Error {
  *   (Apps Script API 未有効化のヒントを出すため)。一部だけ 403 の場合は無視して継続。
  */
 export async function fetchUserRegistry(accessToken: string): Promise<GasApp[]> {
-  const scripts = await listUserScripts(accessToken);
-  const apps: GasApp[] = [];
-  let forbidden = 0;
-  let attempted = 0;
+  const allScripts = await listUserScripts(accessToken);
+  // サブリクエスト上限に収まるよう、最近更新された上位のみを照会する
+  const scripts = allScripts.slice(0, MAX_PROJECTS);
 
-  for (const file of scripts) {
-    attempted++;
-    let web: { url: string; updateTime?: string } | null;
-    try {
-      web = await listWebAppUrl(accessToken, file.id);
-    } catch (err) {
-      if (err instanceof TokenInvalidError) throw err;
-      if (err instanceof AppsScriptForbiddenError) {
-        forbidden++;
-        continue;
+  type Outcome =
+    | { kind: "app"; app: GasApp }
+    | { kind: "forbidden" }
+    | { kind: "skip" }
+    | { kind: "invalid" };
+
+  const outcomes = await mapWithConcurrency(
+    scripts,
+    DEPLOYMENT_CONCURRENCY,
+    async (file): Promise<Outcome> => {
+      try {
+        const web = await listWebAppUrl(accessToken, file.id);
+        if (!web) return { kind: "skip" };
+        return {
+          kind: "app",
+          app: {
+            scriptId: file.id,
+            name: file.name,
+            url: web.url,
+            updateTime: web.updateTime ?? file.modifiedTime,
+          },
+        };
+      } catch (err) {
+        if (err instanceof TokenInvalidError) return { kind: "invalid" };
+        if (err instanceof AppsScriptForbiddenError) return { kind: "forbidden" };
+        return { kind: "skip" }; // 個別プロジェクトの一時エラーはスキップ
       }
-      continue; // 個別プロジェクトの一時エラーはスキップ
-    }
-    if (!web) continue;
-    apps.push({
-      scriptId: file.id,
-      name: file.name,
-      url: web.url,
-      updateTime: web.updateTime ?? file.modifiedTime,
-    });
-  }
+    },
+  );
+
+  if (outcomes.some((o) => o.kind === "invalid")) throw new TokenInvalidError();
+
+  const apps = outcomes
+    .filter((o): o is { kind: "app"; app: GasApp } => o.kind === "app")
+    .map((o) => o.app);
+  const forbidden = outcomes.filter((o) => o.kind === "forbidden").length;
 
   // 対象があったのに全て 403 = Apps Script API 未有効化とみなしてヒントを出す
-  if (attempted > 0 && forbidden === attempted && apps.length === 0) {
+  if (scripts.length > 0 && forbidden === scripts.length && apps.length === 0) {
     throw new AppsScriptForbiddenError();
   }
   return apps;

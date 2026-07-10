@@ -124,18 +124,28 @@ async function loadUser() {
   }
 }
 
-function noticeFromSource(source: AppsResponse["source"]): string | null {
-  if (!source) return null;
+// source に応じた通知を $status に表示する。失効時は確実に復旧できる再連携リンクを張る
+// (通常の再ログインは prompt=select_account のため refresh token が再発行されない)。
+function showRegistryNotice(source: AppsResponse["source"]) {
+  if (!source) return;
   if (source.appsScriptApiDisabled) {
-    return "Apps Script API が未有効です。https://script.google.com/home/usersettings で有効化すると、あなたのGASが自動表示されます。";
+    showStatus(
+      "Apps Script API が未有効です。https://script.google.com/home/usersettings で有効化すると、あなたのGASが自動表示されます。",
+    );
+  } else if (source.userAuthExpired) {
+    $status.replaceChildren(
+      document.createTextNode("Google連携の有効期限が切れました。"),
+    );
+    const a = document.createElement("a");
+    a.href = "/api/auth/login?reconnect=1&redirect=/";
+    a.textContent = "再連携する";
+    $status.append(a);
+    $status.hidden = false;
+  } else if (source.stale) {
+    showStatus(
+      "GAS一覧の自動取得に一時的に失敗しました。手動登録分のみ表示しています。",
+    );
   }
-  if (source.userAuthExpired) {
-    return "Google連携の有効期限が切れました。一度ログアウトして再ログインしてください。";
-  }
-  if (source.stale) {
-    return "GAS一覧の自動取得に一時的に失敗しました。手動登録分のみ表示しています。";
-  }
-  return null;
 }
 
 async function init() {
@@ -158,8 +168,7 @@ async function init() {
     state.categories = data.categories;
     renderCategories();
     renderApps();
-    const notice = noticeFromSource(data.source);
-    if (notice) showStatus(notice);
+    showRegistryNotice(data.source);
   } catch (err) {
     showStatus(
       `ツール一覧の取得に失敗しました (${err instanceof Error ? err.message : String(err)})。再読み込みしてください。`,

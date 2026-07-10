@@ -152,8 +152,11 @@ async function fetchUserRegistryCached(
   refreshToken: string,
 ): Promise<GasApp[]> {
   const cache = edgeCache();
+  // token-store と同じ正規化(trim+lower)でキーを揃える
   const cacheKey = new Request(
-    `https://portal.internal/registry/user/${await sha256hex(email)}`,
+    `https://portal.internal/registry/user/${await sha256hex(
+      email.trim().toLowerCase(),
+    )}`,
   );
   if (cache) {
     const hit = await cache.match(cacheKey);
@@ -233,8 +236,11 @@ export function createApp(registry: Registry) {
     const stateToken = await signState({ state, verifier, redirect }, secret);
     setCookie(c, OAUTH_COOKIE, stateToken, cookieOptions(isHttps(c), 600));
 
-    // 方式B有効時は、ログインの同意でDriveスコープも要求し refresh token を得る
+    // 方式B有効時は、ログインの同意でDriveスコープも要求し refresh token を得る。
+    // ?reconnect=1 のときは prompt=consent を付け、トークン喪失後でも refresh token を
+    // 確実に再発行させる(通常ログインは select_account で毎回の同意を避ける)。
     const withRegistry = registryLoginEnabled(c);
+    const reconnect = c.req.query("reconnect") === "1";
     return c.redirect(
       buildAuthUrl(cfg, {
         state,
@@ -242,6 +248,7 @@ export function createApp(registry: Registry) {
         hostedDomain: c.env.GOOGLE_HOSTED_DOMAIN,
         scopes: withRegistry ? REGISTRY_SCOPES : undefined,
         accessType: withRegistry ? "offline" : "online",
+        prompt: withRegistry && reconnect ? "consent" : undefined,
       }),
     );
   });
@@ -305,7 +312,13 @@ export function createApp(registry: Registry) {
 
     // 本人権限でのGAS列挙用に、リフレッシュトークンを暗号化して保管する。
     // (返るのは初回同意時のみ。既に保管済みなら再取得不要なので無い場合は据え置き)
-    if (withRegistry && c.env.AUTH_KV && refreshToken) {
+    // granular consent で Drive/Script スコープが外された場合は保管しない。保管すると
+    // /api/registry が毎回失敗し「一時的に失敗」を出し続けるため、共有/手動へフォールバックさせる。
+    const grantedList = grantedScope?.split(" ") ?? [];
+    const hasRegistryScopes = REGISTRY_SCOPES.every((s) =>
+      grantedList.includes(s),
+    );
+    if (withRegistry && c.env.AUTH_KV && refreshToken && hasRegistryScopes) {
       await saveRefreshToken(c.env.AUTH_KV, secret, identity.email, {
         refreshToken,
         scope: grantedScope,
@@ -431,11 +444,9 @@ export function createApp(registry: Registry) {
             // Apps Script API 未有効化のヒント(利用者が有効化すれば解消)
             return manualOnly({ mode: "user", appsScriptApiDisabled: true });
           }
-          return manualOnly({
-            mode: "user",
-            stale: true,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          // 詳細はサーバーログのみ(ZodError等の内部詳細をクライアントに出さない)
+          console.warn("registry user mode failed:", err);
+          return manualOnly({ mode: "user", stale: true });
         }
       }
     }
@@ -457,11 +468,11 @@ export function createApp(registry: Registry) {
         registryConfigured: true,
       });
     } catch (err) {
+      console.warn("registry shared mode failed:", err);
       return manualOnly({
         mode: "shared",
         registryConfigured: true,
         stale: true,
-        error: err instanceof Error ? err.message : String(err),
       });
     }
   });

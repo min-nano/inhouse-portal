@@ -199,8 +199,9 @@ GAS Webアプリ (`gas/registry/`) が自分のGASプロジェクトを Drive AP
 マージ表示する(自動取得分には「自動」バッジが付く)。
 
 1. `gas/registry/` を新規GASプロジェクトに配置してWebアプリとしてデプロイ
-   (手順は [`gas/registry/README.md`](gas/registry/README.md))。
-2. デプロイURLを `PROXY_TARGETS` の `registry` キーに登録:
+   (手順は [`gas/registry/README.md`](gas/registry/README.md))。**匿名公開されるため
+   スクリプトプロパティ `SHARED_SECRET` の設定は必須**(未設定だと拒否される)。
+2. デプロイURLを `PROXY_TARGETS` の `registry` キーに登録(`?token=` に上の秘密を付ける):
    ```bash
    npx wrangler pages secret put PROXY_TARGETS
    # 入力例: {"registry":"https://script.google.com/macros/s/XXXX/exec?token=秘密"}

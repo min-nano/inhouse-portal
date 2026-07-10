@@ -8,14 +8,19 @@
  * デプロイ設定:
  *   - 実行するユーザー: 自分
  *   - アクセスできるユーザー: 全員(匿名可)
- *   その上で、下の SHARED_SECRET をスクリプトプロパティに設定しておくと、
- *   ?token=... が一致するリクエストだけに応答する(匿名公開の緩衝材)。
+ *   このエンドポイントはポータルの許可リスト認証の外側にあり匿名公開されるため、
+ *   SHARED_SECRET(スクリプトプロパティ)を**必須**とし、未設定なら拒否する
+ *   (フェイルクローズド)。?token=... が一致するリクエストにだけ応答する。
+ *   注意: GAS の doGet はリクエストヘッダを読めないため token はクエリに乗る。
+ *   GAS の実行ログ等に URL(=token)が残り得る点に留意すること。
  *
  * 事前準備:
- *   - appsscript.json のスコープを付与(このフォルダの appsscript.json 参照)
+ *   - appsscript.json のスコープを付与(このフォルダの appsscript.json 参照。
+ *     drive.metadata.readonly / script.deployments.readonly の最小権限)
+ *   - スクリプトプロパティに SHARED_SECRET を設定(必須)
  *   - https://script.google.com/home/usersettings で Apps Script API を有効化
  *   - 応答URLを Pages の PROXY_TARGETS["registry"] に登録
- *       例: {"registry":"https://script.google.com/macros/s/XXXX/exec"}
+ *       例: {"registry":"https://script.google.com/macros/s/XXXX/exec?token=秘密"}
  */
 
 function doGet(e) {
@@ -23,7 +28,8 @@ function doGet(e) {
   var expected = PropertiesService.getScriptProperties().getProperty(
     "SHARED_SECRET"
   );
-  if (expected && provided !== expected) {
+  // フェイルクローズド: SHARED_SECRET 未設定、または不一致なら拒否
+  if (!expected || provided !== expected) {
     return jsonOutput({ error: "unauthorized" });
   }
 
@@ -31,7 +37,9 @@ function doGet(e) {
     var apps = listDeployedWebApps();
     return jsonOutput({ apps: apps });
   } catch (err) {
-    return jsonOutput({ error: String(err) });
+    // 内部エラー詳細は匿名の呼び出し元に返さない(ログにのみ残す)
+    console.error(err);
+    return jsonOutput({ error: "internal_error" });
   }
 }
 

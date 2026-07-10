@@ -80,6 +80,8 @@ export function buildAuthUrl(
     hostedDomain?: string;
     scopes?: string[];
     accessType?: "online" | "offline";
+    /** 既定 "select_account"。再連携では "consent" を渡し refresh token を再発行させる */
+    prompt?: string;
   },
 ): string {
   const url = new URL(AUTH_ENDPOINT);
@@ -93,7 +95,7 @@ export function buildAuthUrl(
   url.searchParams.set("state", opts.state);
   url.searchParams.set("code_challenge", opts.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("prompt", "select_account");
+  url.searchParams.set("prompt", opts.prompt ?? "select_account");
   if (opts.accessType === "offline") {
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("include_granted_scopes", "true");
@@ -223,17 +225,23 @@ export async function exchangeCodeForTokens(
   };
 }
 
-/** リフレッシュ失敗。status が 4xx なら連携失効(取消/無効)、5xx なら一時障害。 */
+/**
+ * リフレッシュ失敗。恒久失効は `error=invalid_grant`(トークン取消/失効)のときだけ。
+ * `invalid_client`(secret設定ミス)や 429(レート制限)・5xx は一時障害として扱い、
+ * 保管トークンは削除しない。
+ */
 export class TokenRefreshError extends Error {
   readonly status: number;
-  constructor(status: number) {
-    super(`token refresh failed: ${status}`);
+  readonly errorCode?: string;
+  constructor(status: number, errorCode?: string) {
+    super(`token refresh failed: ${status}${errorCode ? ` (${errorCode})` : ""}`);
     this.name = "TokenRefreshError";
     this.status = status;
+    this.errorCode = errorCode;
   }
-  /** 恒久的な失効(連携解除すべき)か。 */
+  /** 恒久的な失効(連携解除すべき)か。invalid_grant のときだけ true。 */
   get isInvalidGrant(): boolean {
-    return this.status >= 400 && this.status < 500;
+    return this.errorCode === "invalid_grant";
   }
 }
 
@@ -254,8 +262,12 @@ export async function refreshAccessToken(
     body: body.toString(),
   });
   if (!res.ok) {
-    // 400/401 は連携失効(ユーザーが取消 or トークン無効)。呼び出し側で連携解除する。
-    throw new TokenRefreshError(res.status);
+    // ステータスではなくボディの error を見て、invalid_grant のときだけ恒久失効扱いにする
+    const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+    throw new TokenRefreshError(
+      res.status,
+      typeof data.error === "string" ? data.error : undefined,
+    );
   }
   const data = (await res.json()) as {
     access_token?: unknown;
