@@ -33,18 +33,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # *.example のプレースホルダ (${VAR}) をシークレットで埋め、実設定ファイルを
-      # 生成する。未設定のシークレットがあれば render-template.mjs がここで落とす。
-      # 生成物 (.clasp.json / .clasprc.json) は .gitignore 済みでコミットされない。
+      # 実設定ファイルを生成する。生成物 (.clasp.json / .clasprc.json) は
+      # .gitignore 済みでコミットされない。
+      #   - .clasp.json  : scriptId だけプレースホルダ置換で埋める
+      #   - .clasprc.json: `clasp login` で作られる ~/.clasprc.json を丸ごと登録した
+      #                    シークレットを、そのままファイルとして書き出す
       - name: Materialize clasp config from secrets
         env:
           CLASP_SCRIPT_ID: ${{ secrets.CLASP_SCRIPT_ID }}
-          CLASP_CLIENT_ID: ${{ secrets.CLASP_CLIENT_ID }}
-          CLASP_CLIENT_SECRET: ${{ secrets.CLASP_CLIENT_SECRET }}
-          CLASP_REFRESH_TOKEN: ${{ secrets.CLASP_REFRESH_TOKEN }}
+          CLASP_CREDENTIALS: ${{ secrets.CLASP_CREDENTIALS }}
         run: |
-          node scripts/render-template.mjs gas/.clasp.json.example   gas/.clasp.json
-          node scripts/render-template.mjs gas/.clasprc.json.example gas/.clasprc.json
+          if [ -z "$CLASP_CREDENTIALS" ]; then
+            echo "::error::Secret CLASP_CREDENTIALS is not set (paste the whole ~/.clasprc.json)."
+            exit 1
+          fi
+          node scripts/render-template.mjs gas/.clasp.json.example gas/.clasp.json
+          printf '%s' "$CLASP_CREDENTIALS" > gas/.clasprc.json
+          # 壊れた JSON をそのまま push しないよう軽く検証する。
+          node -e "JSON.parse(require('fs').readFileSync('gas/.clasprc.json','utf8'))" \
+            || { echo "::error::CLASP_CREDENTIALS is not valid JSON."; exit 1; }
 
       - name: Push source to Apps Script
         run: npx clasp push --force --project gas --auth gas/.clasprc.json

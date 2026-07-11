@@ -2,9 +2,9 @@
   "tokens": {
     "default": {
       "type": "authorized_user",
-      "client_id": "${CLASP_CLIENT_ID}",
-      "client_secret": "${CLASP_CLIENT_SECRET}",
-      "refresh_token": "${CLASP_REFRESH_TOKEN}"
+      "client_id": "<clasp login で発行される値>",
+      "client_secret": "<clasp login で発行される値>",
+      "refresh_token": "<clasp login で発行される値>"
     }
   }
 }

@@ -70,31 +70,31 @@ gas/
 [`.github/workflows/gas-deploy.yml`](../.github/workflows/gas-deploy.yml) が走り、
 `clasp push` → `clasp create-deployment` まで自動で行う。
 
-**認証情報・スクリプトIDはリポジトリに置かない。** コミットするのは
-プレースホルダ入りの `*.example` のみで、CI が GitHub Secrets から値を注入して
+**認証情報・スクリプトIDはリポジトリに置かない。** CI が GitHub Secrets から
 実ファイル (`gas/.clasp.json` / `gas/.clasprc.json`、どちらも `.gitignore` 済み)を
-`scripts/render-template.mjs` で生成する。
+生成する。`.clasprc.json` は `clasp login` が作る認証 JSON を丸ごとシークレットに
+登録し、workflow がそれをそのままファイルとして書き出す。`.clasp.json` は scriptId
+だけ `scripts/render-template.mjs` で埋める。
 
 ### 必要な Secrets(Settings → Secrets and variables → Actions)
 
 | Secret | 中身 | 取得元 |
 | --- | --- | --- |
 | `CLASP_SCRIPT_ID` | Apps Script の scriptId | エディタ URL / `gas/.clasp.json` の `scriptId` |
-| `CLASP_CLIENT_ID` | OAuth クライアント ID | 下記 `~/.clasprc.json` の `tokens.default.client_id` |
-| `CLASP_CLIENT_SECRET` | OAuth クライアントシークレット | 同 `tokens.default.client_secret` |
-| `CLASP_REFRESH_TOKEN` | リフレッシュトークン | 同 `tokens.default.refresh_token` |
+| `CLASP_CREDENTIALS` | `clasp login` が作る認証 JSON **丸ごと** | 下記参照(`~/.clasprc.json` の中身全体) |
 
-### リフレッシュトークンの取り出し方
+### CLASP_CREDENTIALS の取り出し方
 
-ローカルで一度 `npm run gas:login` すると `~/.clasprc.json` に v3 形式で保存される。
-その `tokens.default` から 3 値を取り出して Secrets に登録する:
+ローカルで一度 `npm run gas:login` すると `~/.clasprc.json`(clasp v3 形式:
+`{ "tokens": { "default": { ... } } }`)が作られる。**その中身をそのまま丸ごと**
+`CLASP_CREDENTIALS` に貼り付ける:
 
 ```bash
-# client_id / client_secret / refresh_token を表示(値は秘匿)
-node -e "const t=require(require('os').homedir()+'/.clasprc.json').tokens.default; console.log({client_id:t.client_id, client_secret:t.client_secret, refresh_token:t.refresh_token})"
+# 中身をクリップボードへ(macOS の例)。値は秘匿情報なので取り扱い注意。
+cat ~/.clasprc.json | pbcopy
 ```
 
-> `clasp login` は clasp 内蔵の OAuth クライアントを使うため、`client_id` /
-> `client_secret` は clasp 既定値になる。独自 GCP クライアントを使う場合は
-> `clasp login --creds <oauth.json>` で取得した 3 値を登録する。3 値は必ず同じ
-> ログインで得たものを揃えること(refresh_token は発行元クライアントに紐づく)。
+> `clasp login` は clasp 内蔵の OAuth クライアントを使う。独自 GCP クライアントを
+> 使う場合は `clasp login --creds <oauth.json>` でログインしてから、同様に
+> `~/.clasprc.json` を丸ごと登録すればよい(client_id / secret / refresh_token が
+> セットで入っているため、ファイル単位で扱えば整合性が崩れない)。
