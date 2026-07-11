@@ -82,12 +82,12 @@ describe("GET /api/registry", () => {
     source: {
       manual: number;
       auto: number;
-      registryConfigured?: boolean;
+      mode?: string;
       stale?: boolean;
     };
   };
 
-  it("registry 未設定なら手動分のみを auto:false で返す", async () => {
+  it("Drive未連携なら手動分のみを auto:false で返す", async () => {
     const res = await app.request("/api/registry", {}, makeEnv());
     expect(res.status).toBe(200);
     const body = (await res.json()) as RegistryBody;
@@ -95,62 +95,7 @@ describe("GET /api/registry", () => {
     expect(body.apps.every((a) => a.auto === false)).toBe(true);
     expect(body.source).toMatchObject({
       auto: 0,
-      registryConfigured: false,
+      mode: "manual",
     });
-  });
-
-  it("registry 設定済みなら自動取得分をマージして返す", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              apps: [
-                {
-                  scriptId: "XYZ",
-                  name: "自動ツール",
-                  url: "https://script.google.com/macros/s/XYZ/exec",
-                },
-              ],
-            }),
-            { status: 200 },
-          ),
-      ),
-    );
-    const res = await app.request(
-      "/api/registry",
-      {},
-      makeEnv({
-        PROXY_TARGETS: JSON.stringify({
-          registry: "https://script.google.com/macros/s/REG/exec",
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as RegistryBody;
-    expect(body.source).toMatchObject({ auto: 1, registryConfigured: true });
-    const auto = body.apps.find((a) => a.auto);
-    expect(auto?.id).toMatch(/^gas-/);
-  });
-
-  it("registry 取得に失敗しても手動分を stale で返す", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("boom", { status: 502 })),
-    );
-    const res = await app.request(
-      "/api/registry",
-      {},
-      makeEnv({
-        PROXY_TARGETS: JSON.stringify({
-          registry: "https://script.google.com/macros/s/REG/exec",
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as RegistryBody;
-    expect(body.apps.map((a) => a.id)).toEqual(["tool-a", "tool-b"]);
-    expect(body.source).toMatchObject({ stale: true, auto: 0 });
   });
 });

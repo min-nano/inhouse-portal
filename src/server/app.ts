@@ -8,8 +8,6 @@ import {
 } from "./registry";
 import { parseProxyTargets, proxyRequest } from "./proxy";
 import {
-  edgeCache,
-  fetchGasRegistry,
   listPortalCategories,
   mergeAutoApps,
   type GasApp,
@@ -19,6 +17,7 @@ import {
   fetchUserRegistry,
   AppsScriptForbiddenError,
   TokenInvalidError,
+  type UserRegistry,
 } from "./google-registry";
 import {
   isAllowed,
@@ -70,16 +69,17 @@ export type Env = {
   /** 許可リスト(env ベースライン)。`*` ワイルドカード可 */
   ALLOWED_EMAIL_DOMAINS?: string;
   ALLOWED_EMAILS?: string;
-  /** 許可リスト(運用中に追加・失効する分)を置くKV。GAS本人モードのトークン保管にも使う */
+  /** 許可リスト(運用中に追加・失効する分)を置くKV。許可リスト運用専用。 */
   AUTH_KV?: KVNamespace;
   /**
-   * "1"/"true" でログイン時に GASレジストリ用スコープ
-   * (drive.metadata.readonly / script.deployments.readonly)を要求し、
-   * リフレッシュトークンを暗号化して AUTH_KV に保管する(方式B: 本人権限での自動列挙)。
-   * 有効化前に OAuth 同意画面へ当該スコープを追加しておくこと(未追加だと invalid_scope で
-   * ログインが失敗する)。AUTH_KV 未設定時はこのフラグは無視される。
+   * 方式B(本人権限での GAS 自動列挙)用のリフレッシュトークン保管先KV。
+   * **このKVをバインドすること自体が方式B利用の opt-in** となる(バインド + Google OAuth
+   * 設定が揃うと有効化)。許可リスト用の AUTH_KV とは分離し、許可リスト目的で KV を
+   * バインドしただけで sensitive スコープ要求やトークン保管が発動しないようにする。
+   * 有効化前に OAuth 同意画面へ当該スコープ(drive.metadata.readonly /
+   * script.deployments.readonly)を追加しておくこと(未追加だと invalid_scope で失敗)。
    */
-  REGISTRY_LOGIN_SCOPES?: string;
+  REGISTRY_KV?: KVNamespace;
   /**
    * プレビュー(pages.dev)で Cloudflare Access のトークンを署名検証するための設定。
    * 設定すると presence チェックから厳密な RS256 署名検証に格上げされる。
@@ -91,9 +91,6 @@ export type Env = {
 };
 
 type AppContext = Context<{ Bindings: Env }>;
-
-/** PROXY_TARGETS 内で GASレジストリのエンドポイントを指すキー名。 */
-const REGISTRY_TARGET_KEY = "registry";
 
 function isHttps(c: AppContext): boolean {
   return new URL(c.req.url).protocol === "https:";
@@ -119,20 +116,15 @@ function googleConfig(c: AppContext): GoogleConfig | null {
   };
 }
 
-function truthy(v: string | undefined): boolean {
-  return v === "1" || v?.toLowerCase() === "true";
-}
-
 /**
- * ログイン時に GASレジストリ用スコープを要求し、リフレッシュトークンを保管する
- * 方式B が有効かどうか。フラグ + トークン保管先(AUTH_KV) + Google設定が揃って初めて有効。
+ * 方式B(本人権限での GAS 自動列挙)が有効かどうか。有効時はログインで Drive スコープを
+ * 要求しリフレッシュトークンを保管する。**専用フラグは持たず、トークン保管用の REGISTRY_KV
+ * をバインドすること自体を opt-in とする**(REGISTRY_KV + Google 設定が揃えば有効)。
+ * 許可リスト用の AUTH_KV とは分離しているため、許可リスト目的で KV をバインドしただけでは
+ * 方式Bは起動しない。有効化前に OAuth 同意画面へ当該スコープを追加しておくこと。
  */
 function registryLoginEnabled(c: AppContext): boolean {
-  return (
-    truthy(c.env.REGISTRY_LOGIN_SCOPES) &&
-    !!c.env.AUTH_KV &&
-    googleConfig(c) !== null
-  );
+  return !!c.env.REGISTRY_KV && googleConfig(c) !== null;
 }
 
 /** 現在のログインユーザー(自前セッション)を返す。無ければ null。 */
@@ -140,6 +132,12 @@ async function getUser(c: AppContext): Promise<SessionUser | null> {
   const secret = c.env.AUTH_SECRET;
   if (!secret) return null;
   return getSessionFromRequest(c.req.raw, secret);
+}
+
+/** Cloudflare 実行環境の `caches.default`(あれば)を取り出す。テスト環境では undefined。 */
+function edgeCache(): Cache | undefined {
+  if (typeof caches === "undefined") return undefined;
+  return (caches as unknown as { default?: Cache }).default;
 }
 
 /**
@@ -150,7 +148,7 @@ async function fetchUserRegistryCached(
   cfg: GoogleConfig,
   email: string,
   refreshToken: string,
-): Promise<GasApp[]> {
+): Promise<UserRegistry> {
   const cache = edgeCache();
   // token-store と同じ正規化(trim+lower)でキーを揃える
   const cacheKey = new Request(
@@ -160,14 +158,14 @@ async function fetchUserRegistryCached(
   );
   if (cache) {
     const hit = await cache.match(cacheKey);
-    if (hit) return (await hit.json()) as GasApp[];
+    if (hit) return (await hit.json()) as UserRegistry;
   }
   const { accessToken } = await refreshAccessToken(cfg, refreshToken);
-  const apps = await fetchUserRegistry(accessToken);
+  const result = await fetchUserRegistry(accessToken);
   if (cache) {
     await cache.put(
       cacheKey,
-      new Response(JSON.stringify(apps), {
+      new Response(JSON.stringify(result), {
         headers: {
           "content-type": "application/json; charset=utf-8",
           "cache-control": "max-age=300",
@@ -175,7 +173,7 @@ async function fetchUserRegistryCached(
       }),
     );
   }
-  return apps;
+  return result;
 }
 
 /** ログイン後の戻り先。同一オリジンの絶対パスのみ許可(オープンリダイレクト防止) */
@@ -318,8 +316,8 @@ export function createApp(registry: Registry) {
     const hasRegistryScopes = REGISTRY_SCOPES.every((s) =>
       grantedList.includes(s),
     );
-    if (withRegistry && c.env.AUTH_KV && refreshToken && hasRegistryScopes) {
-      await saveRefreshToken(c.env.AUTH_KV, secret, identity.email, {
+    if (withRegistry && c.env.REGISTRY_KV && refreshToken && hasRegistryScopes) {
+      await saveRefreshToken(c.env.REGISTRY_KV, secret, identity.email, {
         refreshToken,
         scope: grantedScope,
         connectedAt: Date.now(),
@@ -395,9 +393,8 @@ export function createApp(registry: Registry) {
   //
   // 取得元は次の優先順位:
   //   1. ユーザーモード(方式B): 本人が Google Drive 連携済みなら、本人の権限で
-  //      「その人がアクセスできる GAS」だけを列挙する(per-user アクセス制御)。
-  //   2. 共有モード: PROXY_TARGETS["registry"] の共有レジストリGASをプロキシ。
-  //   3. 手動のみ: どちらも無ければ apps.json だけを返す。
+  //      「その人がアクセスできる GAS」(共有ドライブ内含む)だけを列挙する。
+  //   2. 手動のみ: 連携が無ければ apps.json だけを返す。
   // いずれの失敗時も手動分は必ず返し、画面を壊さない。
   app.get("/api/registry", async (c) => {
     const config = resolveGasRegistryConfig(registry);
@@ -421,23 +418,24 @@ export function createApp(registry: Registry) {
     const user = await getUser(c);
     const secret = c.env.AUTH_SECRET;
     const cfg = googleConfig(c);
-    if (user && secret && cfg && c.env.AUTH_KV) {
-      const stored = await loadStoredToken(c.env.AUTH_KV, secret, user.email);
+    if (user && secret && cfg && c.env.REGISTRY_KV) {
+      const stored = await loadStoredToken(c.env.REGISTRY_KV, secret, user.email);
       if (stored) {
         try {
-          const autoApps = await fetchUserRegistryCached(
-            cfg,
-            user.email,
-            stored.refreshToken,
-          );
-          return mergedResponse(autoApps, { mode: "user" });
+          const { apps: autoApps, incompleteSearch } =
+            await fetchUserRegistryCached(cfg, user.email, stored.refreshToken);
+          return mergedResponse(autoApps, {
+            mode: "user",
+            // 共有ドライブ検索が不完全だった場合は「一部欠落の可能性」を画面へ伝える
+            ...(incompleteSearch ? { incomplete: true } : {}),
+          });
         } catch (err) {
           // 連携が失効(取消・無効)していたら自動で連携解除して手動へフォールバック
           const expired =
             err instanceof TokenInvalidError ||
             (err instanceof TokenRefreshError && err.isInvalidGrant);
           if (expired) {
-            await deleteStoredToken(c.env.AUTH_KV, secret, user.email);
+            await deleteStoredToken(c.env.REGISTRY_KV, secret, user.email);
             return manualOnly({ mode: "user", userAuthExpired: true });
           }
           if (err instanceof AppsScriptForbiddenError) {
@@ -451,30 +449,8 @@ export function createApp(registry: Registry) {
       }
     }
 
-    // ---- 2. 共有モード(PROXY_TARGETS["registry"]) ----
-    let registryUrl: string | undefined;
-    try {
-      registryUrl = parseProxyTargets(c.env.PROXY_TARGETS)[REGISTRY_TARGET_KEY];
-    } catch {
-      return manualOnly({ mode: "manual", registryConfigured: false });
-    }
-    if (!registryUrl) {
-      return manualOnly({ mode: "manual", registryConfigured: false });
-    }
-    try {
-      const { apps: autoApps } = await fetchGasRegistry(registryUrl);
-      return mergedResponse(autoApps, {
-        mode: "shared",
-        registryConfigured: true,
-      });
-    } catch (err) {
-      console.warn("registry shared mode failed:", err);
-      return manualOnly({
-        mode: "shared",
-        registryConfigured: true,
-        stale: true,
-      });
-    }
+    // ---- 2. 手動のみ(方式B未連携) ----
+    return manualOnly({ mode: "manual" });
   });
 
 

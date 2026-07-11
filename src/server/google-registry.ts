@@ -23,13 +23,19 @@ export class TokenInvalidError extends Error {
 
 type DriveFile = { id: string; name: string; modifiedTime?: string };
 
+/** listUserScripts の結果。incompleteSearch は Drive が全コーパスを検索しきれなかった印。 */
+export type UserScripts = { files: DriveFile[]; incompleteSearch: boolean };
+
 /** ドライブ内の自分がアクセスできる GAS プロジェクトを列挙する(ページング対応)。 */
 export async function listUserScripts(
   accessToken: string,
   limit = MAX_PROJECTS,
-): Promise<DriveFile[]> {
+): Promise<UserScripts> {
   const headers = { Authorization: `Bearer ${accessToken}` };
   const files: DriveFile[] = [];
+  // corpora=allDrives では Drive が全共有ドライブを検索しきれず incompleteSearch が
+  // 立つことがある。その場合「欠けた一覧」を無言で返さないよう呼び出し側へ伝える。
+  let incompleteSearch = false;
   // orderBy=modifiedTime desc なので必要なのは先頭 limit 件だけ。使わないページを
   // 取得してサブリクエストを浪費しないよう、limit 件そろったら打ち切る。
   const pageSize = Math.min(Math.max(limit, 1), 100);
@@ -40,9 +46,17 @@ export async function listUserScripts(
       "q",
       "mimeType='application/vnd.google-apps.script' and trashed=false",
     );
-    url.searchParams.set("fields", "nextPageToken,files(id,name,modifiedTime)");
+    url.searchParams.set(
+      "fields",
+      "nextPageToken,incompleteSearch,files(id,name,modifiedTime)",
+    );
     url.searchParams.set("pageSize", String(pageSize));
     url.searchParams.set("orderBy", "modifiedTime desc");
+    // 共有ドライブ(Shared Drives)内の GAS も対象にする。既定 (corpora=user) は
+    // マイドライブしか見ないため、これらを付けないと共有ドライブ保管分は列挙されない。
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+    url.searchParams.set("corpora", "allDrives");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
     const res = await fetch(url.toString(), { headers });
@@ -53,7 +67,9 @@ export async function listUserScripts(
     const data = (await res.json()) as {
       files?: DriveFile[];
       nextPageToken?: string;
+      incompleteSearch?: boolean;
     };
+    if (data.incompleteSearch) incompleteSearch = true;
     for (const f of data.files ?? []) {
       if (f && typeof f.id === "string" && typeof f.name === "string") {
         files.push(f);
@@ -61,7 +77,12 @@ export async function listUserScripts(
     }
     pageToken = data.nextPageToken ?? "";
   } while (pageToken && files.length < limit);
-  return files.slice(0, limit);
+  if (incompleteSearch) {
+    console.warn(
+      "Drive files.list returned incompleteSearch=true; 共有ドライブの一部が列挙から欠落している可能性があります",
+    );
+  }
+  return { files: files.slice(0, limit), incompleteSearch };
 }
 
 type Deployment = {
@@ -140,18 +161,23 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+/** fetchUserRegistry の結果。incompleteSearch は共有ドライブ検索が不完全だった印。 */
+export type UserRegistry = { apps: GasApp[]; incompleteSearch: boolean };
+
 /**
- * 本人権限で GASプロジェクトを列挙し、Webアプリとしてデプロイ済みのものを
- * GasApp[] で返す。
+ * 本人権限で GASプロジェクトを列挙し、Webアプリとしてデプロイ済みのものを返す。
  *
  * - TokenInvalidError: トークンが失効(呼び出し側で連携解除)
  * - すべてのデプロイ照会が Apps Script API 403 なら AppsScriptForbiddenError
  *   (Apps Script API 未有効化のヒントを出すため)。一部だけ 403 の場合は無視して継続。
  */
-export async function fetchUserRegistry(accessToken: string): Promise<GasApp[]> {
+export async function fetchUserRegistry(
+  accessToken: string,
+): Promise<UserRegistry> {
   // listUserScripts が最近更新の上位 MAX_PROJECTS 件までに絞って返す
   // (Drive のページングもそこで打ち切られ、サブリクエストを浪費しない)。
-  const scripts = await listUserScripts(accessToken);
+  const { files: scripts, incompleteSearch } =
+    await listUserScripts(accessToken);
 
   type Outcome =
     | { kind: "app"; app: GasApp }
@@ -194,5 +220,5 @@ export async function fetchUserRegistry(accessToken: string): Promise<GasApp[]> 
   if (scripts.length > 0 && forbidden === scripts.length && apps.length === 0) {
     throw new AppsScriptForbiddenError();
   }
-  return apps;
+  return { apps, incompleteSearch };
 }

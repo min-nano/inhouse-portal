@@ -46,7 +46,8 @@ function baseEnv(kv: KVNamespace, overrides: Partial<Env> = {}): Env {
     GOOGLE_CLIENT_ID: "client-id",
     GOOGLE_CLIENT_SECRET: "client-secret",
     ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
-    AUTH_KV: kv,
+    // 方式B(本人権限GAS列挙)のトークン保管用KV。バインド自体が opt-in。
+    REGISTRY_KV: kv,
     ...overrides,
   };
 }
@@ -89,12 +90,8 @@ afterEach(() => {
 });
 
 describe("ログイン時スコープ要求 (方式B)", () => {
-  it("REGISTRY_LOGIN_SCOPES 有効時、login は offline + Driveスコープを要求する", async () => {
-    const res = await app.request(
-      "/api/auth/login",
-      {},
-      baseEnv(memoryKV(), { REGISTRY_LOGIN_SCOPES: "1" }),
-    );
+  it("方式B有効時(AUTH_KV+Google設定あり)、login は offline + Driveスコープを要求する", async () => {
+    const res = await app.request("/api/auth/login", {}, baseEnv(memoryKV()));
     expect(res.status).toBe(302);
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("access_type")).toBe("offline");
@@ -104,11 +101,11 @@ describe("ログイン時スコープ要求 (方式B)", () => {
     );
   });
 
-  it("フラグ無効時は従来どおり identity スコープのみ", async () => {
+  it("REGISTRY_KV 未設定なら従来どおり identity スコープのみ", async () => {
     const res = await app.request(
       "/api/auth/login",
       {},
-      baseEnv(memoryKV()),
+      baseEnv(memoryKV(), { REGISTRY_KV: undefined }),
     );
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("access_type")).toBeNull();
@@ -117,7 +114,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
 
   it("コールバックでリフレッシュトークンを暗号化保管する", async () => {
     const kv = memoryKV();
-    const env = baseEnv(kv, { REGISTRY_LOGIN_SCOPES: "1" });
+    const env = baseEnv(kv);
 
     // login で state と oauth cookie を得る
     const login = await app.request("/api/auth/login", {}, env);
@@ -164,7 +161,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
 
   it("granular consent でDriveスコープを外された場合はトークンを保管しない", async () => {
     const kv = memoryKV();
-    const env = baseEnv(kv, { REGISTRY_LOGIN_SCOPES: "1" });
+    const env = baseEnv(kv);
     const login = await app.request("/api/auth/login", {}, env);
     const state = new URL(login.headers.get("location")!).searchParams.get(
       "state",
@@ -206,7 +203,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
     const res = await app.request(
       "/api/auth/login?reconnect=1",
       {},
-      baseEnv(memoryKV(), { REGISTRY_LOGIN_SCOPES: "1" }),
+      baseEnv(memoryKV()),
     );
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("prompt")).toBe("consent");
@@ -337,7 +334,7 @@ describe("GET /api/registry (ユーザーモード)", () => {
     expect(body.source.appsScriptApiDisabled).toBe(true);
   });
 
-  it("未ログインは手動/共有へフォールバック(ユーザーモードに入らない)", async () => {
+  it("未ログインは手動へフォールバック(ユーザーモードに入らない)", async () => {
     const res = await app.request("/api/registry", {}, baseEnv(kv));
     const body = (await res.json()) as { source: { mode: string } };
     expect(body.source.mode).not.toBe("user");
