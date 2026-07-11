@@ -56,12 +56,33 @@ describe("listUserScripts", () => {
         ),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const files = await listUserScripts("good", 2);
+    const { files } = await listUserScripts("good", 2);
     expect(files.map((f) => f.id)).toEqual(["A", "B"]);
     expect(fetchMock).toHaveBeenCalledOnce();
     // pageSize は limit に合わせる
     const calledUrl = new URL(fetchMock.mock.calls[0]![0]);
     expect(calledUrl.searchParams.get("pageSize")).toBe("2");
+    // 共有ドライブ(Shared Drives)を対象にするパラメータが落ちていないこと。
+    // これらが欠けると共有ドライブ保管分が静かに列挙から消える。
+    expect(calledUrl.searchParams.get("supportsAllDrives")).toBe("true");
+    expect(calledUrl.searchParams.get("includeItemsFromAllDrives")).toBe("true");
+    expect(calledUrl.searchParams.get("corpora")).toBe("allDrives");
+  });
+
+  it("incompleteSearch=true を伝播する(共有ドライブ検索が不完全)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ files: [{ id: "A", name: "a" }], incompleteSearch: true }),
+            { status: 200 },
+          ),
+      ),
+    );
+    const { files, incompleteSearch } = await listUserScripts("good", 5);
+    expect(files.map((f) => f.id)).toEqual(["A"]);
+    expect(incompleteSearch).toBe(true);
   });
 });
 
@@ -95,7 +116,7 @@ describe("fetchUserRegistry", () => {
         return undefined;
       }),
     );
-    const apps = await fetchUserRegistry("good");
+    const { apps } = await fetchUserRegistry("good");
     expect(apps).toHaveLength(1);
     expect(apps[0]).toMatchObject({
       scriptId: "SID1",
@@ -143,7 +164,7 @@ describe("fetchUserRegistry", () => {
         return { status: 403, body: {} };
       }),
     );
-    const apps = await fetchUserRegistry("good");
+    const { apps } = await fetchUserRegistry("good");
     expect(apps.map((a) => a.scriptId)).toEqual(["SID1"]);
   });
 });

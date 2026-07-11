@@ -4,8 +4,9 @@
 > 「本人トークン保管済み → 方式B / それ以外 → 手動台帳のみ」の2段構成。
 >
 > **方式B: ユーザーモード(本人権限・per-userアクセス制御)** ↓「per-userで返す」で後述
-> - **ログイン時にDriveスコープを要求**(`AUTH_KV` バインド + Google OAuth 設定で自動有効化。
->   専用フラグは無い)し、得た本人のOAuthトークンで **その人がアクセスできるGASだけ**を
+> - **ログイン時にDriveスコープを要求**(`REGISTRY_KV` バインド + Google OAuth 設定で有効化。
+>   専用フラグは持たず、トークン保管用KVのバインド自体が opt-in。許可リスト用 `AUTH_KV` とは
+>   別バインディング)し、得た本人のOAuthトークンで **その人がアクセスできるGASだけ**を
 >   列挙する(`src/server/google-registry.ts`)。
 >   共有ドライブ内のGASも対象(`supportsAllDrives` / `includeItemsFromAllDrives` /
 >   `corpora=allDrives`)。
@@ -120,7 +121,7 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
 ### フロー
 
 ```
-ログイン (/api/auth/login)  ※方式B有効時(AUTH_KV バインド + Google OAuth 設定)
+ログイン (/api/auth/login)  ※方式B有効時(REGISTRY_KV バインド + Google OAuth 設定)
    └─ Google 同意画面 (openid/email/profile + Driveスコープ, access_type=offline)
         └─ /api/auth/callback
              ├─ 通常のセッション発行(従来どおり)
@@ -148,9 +149,10 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
   復号不可**。`AUTH_SECRET` のローテートで全連携が実質失効する。
 - KVキーは email の **HMAC-SHA256(AUTH_SECRET 由来)**。平文PIIを使わず、かつ候補メールの
   総当たりで連携有無を判定されないようにする(許可リストの `emailHashes` と同方式)。
-- **ログイン時にスコープ要求**: `AUTH_KV` バインド + Google OAuth 設定が揃うと方式Bが
-  自動的に有効になり(専用フラグは持たない)、ログイン同意でDriveスコープも一緒に要求する
-  (opt-inの連携ボタンは無し)。`AUTH_KV` 未バインド時は従来どおり identity のみのログイン。
+- **ログイン時にスコープ要求**: `REGISTRY_KV` バインド + Google OAuth 設定が揃うと方式Bが
+  有効になり(専用フラグは持たず、トークン保管用KVのバインド自体が opt-in。許可リスト用
+  `AUTH_KV` とは別)、ログイン同意でDriveスコープも一緒に要求する(opt-inの連携ボタンは無し)。
+  `REGISTRY_KV` 未バインド時は従来どおり identity のみのログイン。
 - **自動失効処理**: リフレッシュ失敗のうち `error=invalid_grant`(取消・失効)のときだけ
   保管トークンを削除する。`invalid_client`(secret設定ミス)や 429・5xx は一時障害として
   トークンを残す(設定を直せば復旧できるように)。
@@ -172,11 +174,11 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
   すれば審査不要だが、その場合**同一 Workspace 組織のメンバーしか連携できない**。
   外部協力者(組織外メール)向けに使うには「外部」+ Google のアプリ審査が必要になる。
 - 外部協力者の「本人が見えるGAS」は各自の個人アカウントのGASであり、事務所の一覧
-  としては無意味。→ **方式Bは実質 Workspace メンバー向け**。未連携ユーザーは方式A/手動に
+  としては無意味。→ **方式Bは実質 Workspace メンバー向け**。未連携ユーザーは手動台帳に
   フォールバックする作りにしてある。
 - 各利用者が `https://script.google.com/home/usersettings` で Apps Script API を
   有効化しておく必要がある(未有効なら画面にヒントを表示)。
-- KV バインディング `AUTH_KV` が必須(トークン保管先)。
+- KV バインディング `REGISTRY_KV` が必須(トークン保管先。許可リスト用 `AUTH_KV` とは別)。
 - OAuth 同意画面が「テスト(Testing)」公開ステータスのままだと**リフレッシュトークンは
   7日で失効**する。継続運用するには公開ステータスを「本番(In production)」にする
   (内部アプリなら審査不要で本番化できる)。失効時は画面から再連携すれば復旧する。

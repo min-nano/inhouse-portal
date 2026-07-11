@@ -46,7 +46,8 @@ function baseEnv(kv: KVNamespace, overrides: Partial<Env> = {}): Env {
     GOOGLE_CLIENT_ID: "client-id",
     GOOGLE_CLIENT_SECRET: "client-secret",
     ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
-    AUTH_KV: kv,
+    // 方式B(本人権限GAS列挙)のトークン保管用KV。バインド自体が opt-in。
+    REGISTRY_KV: kv,
     ...overrides,
   };
 }
@@ -100,11 +101,11 @@ describe("ログイン時スコープ要求 (方式B)", () => {
     );
   });
 
-  it("AUTH_KV 未設定なら従来どおり identity スコープのみ", async () => {
+  it("REGISTRY_KV 未設定なら従来どおり identity スコープのみ", async () => {
     const res = await app.request(
       "/api/auth/login",
       {},
-      baseEnv(memoryKV(), { AUTH_KV: undefined }),
+      baseEnv(memoryKV(), { REGISTRY_KV: undefined }),
     );
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("access_type")).toBeNull();

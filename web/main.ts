@@ -8,6 +8,7 @@ type AppsResponse = {
     auto: number;
     mode?: "user" | "manual";
     stale?: boolean;
+    incomplete?: boolean;
     userAuthExpired?: boolean;
     appsScriptApiDisabled?: boolean;
     error?: string;
@@ -143,6 +144,10 @@ function showRegistryNotice(source: AppsResponse["source"]) {
   } else if (source.stale) {
     showStatus(
       "GAS一覧の自動取得に一時的に失敗しました。手動登録分のみ表示しています。",
+    );
+  } else if (source.incomplete) {
+    showStatus(
+      "共有ドライブの検索が完全に終わらなかったため、一部のGASが一覧に出ていない可能性があります。",
     );
   }
 }

@@ -91,7 +91,8 @@ export function mergeAutoApps(
 
   for (const gasApp of autoApps) {
     if (excluded.has(gasApp.scriptId)) continue;
-    // GAS由来でない url は信頼できないので除外(侵害されたレジストリ対策)
+    // GAS由来でない url は信頼できないので除外(万一おかしな url が混ざっても、
+    // 任意の https リンクが「自動」バッジ付きで並ばないようにする)
     if (!isAllowedAutoUrl(gasApp.url)) continue;
     const override = config.overrides[gasApp.scriptId];
     if (override?.hidden) continue;
@@ -118,10 +119,4 @@ export function listPortalCategories(apps: PortalApp[]): string[] {
     if (!categories.includes(app.category)) categories.push(app.category);
   }
   return categories;
-}
-
-/** Cloudflare 実行環境の `caches.default`(あれば)を取り出す。テスト環境では undefined。 */
-export function edgeCache(): Cache | undefined {
-  if (typeof caches === "undefined") return undefined;
-  return (caches as unknown as { default?: Cache }).default;
 }

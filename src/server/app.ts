@@ -8,7 +8,6 @@ import {
 } from "./registry";
 import { parseProxyTargets, proxyRequest } from "./proxy";
 import {
-  edgeCache,
   listPortalCategories,
   mergeAutoApps,
   type GasApp,
@@ -18,6 +17,7 @@ import {
   fetchUserRegistry,
   AppsScriptForbiddenError,
   TokenInvalidError,
+  type UserRegistry,
 } from "./google-registry";
 import {
   isAllowed,
@@ -69,8 +69,17 @@ export type Env = {
   /** 許可リスト(env ベースライン)。`*` ワイルドカード可 */
   ALLOWED_EMAIL_DOMAINS?: string;
   ALLOWED_EMAILS?: string;
-  /** 許可リスト(運用中に追加・失効する分)を置くKV。GAS本人モードのトークン保管にも使う */
+  /** 許可リスト(運用中に追加・失効する分)を置くKV。許可リスト運用専用。 */
   AUTH_KV?: KVNamespace;
+  /**
+   * 方式B(本人権限での GAS 自動列挙)用のリフレッシュトークン保管先KV。
+   * **このKVをバインドすること自体が方式B利用の opt-in** となる(バインド + Google OAuth
+   * 設定が揃うと有効化)。許可リスト用の AUTH_KV とは分離し、許可リスト目的で KV を
+   * バインドしただけで sensitive スコープ要求やトークン保管が発動しないようにする。
+   * 有効化前に OAuth 同意画面へ当該スコープ(drive.metadata.readonly /
+   * script.deployments.readonly)を追加しておくこと(未追加だと invalid_scope で失敗)。
+   */
+  REGISTRY_KV?: KVNamespace;
   /**
    * プレビュー(pages.dev)で Cloudflare Access のトークンを署名検証するための設定。
    * 設定すると presence チェックから厳密な RS256 署名検証に格上げされる。
@@ -108,14 +117,14 @@ function googleConfig(c: AppContext): GoogleConfig | null {
 }
 
 /**
- * 方式B(本人権限での GAS 自動列挙)が有効かどうか。ログイン時に Drive スコープを
- * 要求しリフレッシュトークンを保管する。トークン保管先(AUTH_KV)と Google 設定が
- * 揃えば常に有効(方式Bのみ採用のため専用フラグは持たない)。
- * 有効化前に OAuth 同意画面へ当該スコープ(drive.metadata.readonly /
- * script.deployments.readonly)を追加しておくこと(未追加だと invalid_scope で失敗)。
+ * 方式B(本人権限での GAS 自動列挙)が有効かどうか。有効時はログインで Drive スコープを
+ * 要求しリフレッシュトークンを保管する。**専用フラグは持たず、トークン保管用の REGISTRY_KV
+ * をバインドすること自体を opt-in とする**(REGISTRY_KV + Google 設定が揃えば有効)。
+ * 許可リスト用の AUTH_KV とは分離しているため、許可リスト目的で KV をバインドしただけでは
+ * 方式Bは起動しない。有効化前に OAuth 同意画面へ当該スコープを追加しておくこと。
  */
 function registryLoginEnabled(c: AppContext): boolean {
-  return !!c.env.AUTH_KV && googleConfig(c) !== null;
+  return !!c.env.REGISTRY_KV && googleConfig(c) !== null;
 }
 
 /** 現在のログインユーザー(自前セッション)を返す。無ければ null。 */
@@ -123,6 +132,12 @@ async function getUser(c: AppContext): Promise<SessionUser | null> {
   const secret = c.env.AUTH_SECRET;
   if (!secret) return null;
   return getSessionFromRequest(c.req.raw, secret);
+}
+
+/** Cloudflare 実行環境の `caches.default`(あれば)を取り出す。テスト環境では undefined。 */
+function edgeCache(): Cache | undefined {
+  if (typeof caches === "undefined") return undefined;
+  return (caches as unknown as { default?: Cache }).default;
 }
 
 /**
@@ -133,7 +148,7 @@ async function fetchUserRegistryCached(
   cfg: GoogleConfig,
   email: string,
   refreshToken: string,
-): Promise<GasApp[]> {
+): Promise<UserRegistry> {
   const cache = edgeCache();
   // token-store と同じ正規化(trim+lower)でキーを揃える
   const cacheKey = new Request(
@@ -143,14 +158,14 @@ async function fetchUserRegistryCached(
   );
   if (cache) {
     const hit = await cache.match(cacheKey);
-    if (hit) return (await hit.json()) as GasApp[];
+    if (hit) return (await hit.json()) as UserRegistry;
   }
   const { accessToken } = await refreshAccessToken(cfg, refreshToken);
-  const apps = await fetchUserRegistry(accessToken);
+  const result = await fetchUserRegistry(accessToken);
   if (cache) {
     await cache.put(
       cacheKey,
-      new Response(JSON.stringify(apps), {
+      new Response(JSON.stringify(result), {
         headers: {
           "content-type": "application/json; charset=utf-8",
           "cache-control": "max-age=300",
@@ -158,7 +173,7 @@ async function fetchUserRegistryCached(
       }),
     );
   }
-  return apps;
+  return result;
 }
 
 /** ログイン後の戻り先。同一オリジンの絶対パスのみ許可(オープンリダイレクト防止) */
@@ -301,8 +316,8 @@ export function createApp(registry: Registry) {
     const hasRegistryScopes = REGISTRY_SCOPES.every((s) =>
       grantedList.includes(s),
     );
-    if (withRegistry && c.env.AUTH_KV && refreshToken && hasRegistryScopes) {
-      await saveRefreshToken(c.env.AUTH_KV, secret, identity.email, {
+    if (withRegistry && c.env.REGISTRY_KV && refreshToken && hasRegistryScopes) {
+      await saveRefreshToken(c.env.REGISTRY_KV, secret, identity.email, {
         refreshToken,
         scope: grantedScope,
         connectedAt: Date.now(),
@@ -403,23 +418,24 @@ export function createApp(registry: Registry) {
     const user = await getUser(c);
     const secret = c.env.AUTH_SECRET;
     const cfg = googleConfig(c);
-    if (user && secret && cfg && c.env.AUTH_KV) {
-      const stored = await loadStoredToken(c.env.AUTH_KV, secret, user.email);
+    if (user && secret && cfg && c.env.REGISTRY_KV) {
+      const stored = await loadStoredToken(c.env.REGISTRY_KV, secret, user.email);
       if (stored) {
         try {
-          const autoApps = await fetchUserRegistryCached(
-            cfg,
-            user.email,
-            stored.refreshToken,
-          );
-          return mergedResponse(autoApps, { mode: "user" });
+          const { apps: autoApps, incompleteSearch } =
+            await fetchUserRegistryCached(cfg, user.email, stored.refreshToken);
+          return mergedResponse(autoApps, {
+            mode: "user",
+            // 共有ドライブ検索が不完全だった場合は「一部欠落の可能性」を画面へ伝える
+            ...(incompleteSearch ? { incomplete: true } : {}),
+          });
         } catch (err) {
           // 連携が失効(取消・無効)していたら自動で連携解除して手動へフォールバック
           const expired =
             err instanceof TokenInvalidError ||
             (err instanceof TokenRefreshError && err.isInvalidGrant);
           if (expired) {
-            await deleteStoredToken(c.env.AUTH_KV, secret, user.email);
+            await deleteStoredToken(c.env.REGISTRY_KV, secret, user.email);
             return manualOnly({ mode: "user", userAuthExpired: true });
           }
           if (err instanceof AppsScriptForbiddenError) {

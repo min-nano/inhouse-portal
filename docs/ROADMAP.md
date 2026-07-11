@@ -37,8 +37,8 @@
 
 詳細設計: `docs/phase2-gas-registry.md`
 
-- [x] 方式B(ユーザーモード)を採用: `AUTH_KV` バインド + Google OAuth 設定で自動有効化
-      (専用フラグは持たない)。**ログイン時にDriveスコープを要求**し、
+- [x] 方式B(ユーザーモード)を採用: `REGISTRY_KV` バインド + Google OAuth 設定で有効化
+      (専用フラグは持たず、トークン保管用KVのバインド自体が opt-in)。**ログイン時にDriveスコープを要求**し、
       本人権限で **その人がアクセスできるGASだけ**を列挙(per-userアクセス制御)。
       共有ドライブ内GASも対象(Drive APIの `supportsAllDrives`/`includeItemsFromAllDrives`/
       `corpora=allDrives`)。列挙は `src/server/google-registry.ts`。
