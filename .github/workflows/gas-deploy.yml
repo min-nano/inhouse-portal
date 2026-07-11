@@ -1,0 +1,62 @@
+name: Deploy GAS (clasp)
+
+# gas/ 配下の変更を単一 Apps Script プロジェクトへ push し、デプロイまで行う。
+# 認証情報・スクリプトIDはリポジトリに置かず、すべて GitHub Secrets から注入する
+# (コミット済みの *.example はプレースホルダのみ)。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gas/**"
+      - ".github/workflows/gas-deploy.yml"
+  workflow_dispatch:
+
+# 同時実行を1本に絞り、デプロイの競合を避ける。
+concurrency:
+  group: gas-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # *.example のプレースホルダ (${VAR}) をシークレットで埋め、実設定ファイルを
+      # 生成する。未設定のシークレットがあれば render-template.mjs がここで落とす。
+      # 生成物 (.clasp.json / .clasprc.json) は .gitignore 済みでコミットされない。
+      - name: Materialize clasp config from secrets
+        env:
+          CLASP_SCRIPT_ID: ${{ secrets.CLASP_SCRIPT_ID }}
+          CLASP_CLIENT_ID: ${{ secrets.CLASP_CLIENT_ID }}
+          CLASP_CLIENT_SECRET: ${{ secrets.CLASP_CLIENT_SECRET }}
+          CLASP_REFRESH_TOKEN: ${{ secrets.CLASP_REFRESH_TOKEN }}
+        run: |
+          node scripts/render-template.mjs gas/.clasp.json.example   gas/.clasp.json
+          node scripts/render-template.mjs gas/.clasprc.json.example gas/.clasprc.json
+
+      - name: Push source to Apps Script
+        run: npx clasp push --force --project gas --auth gas/.clasprc.json
+
+      - name: Create deployment
+        run: |
+          npx clasp create-deployment \
+            --project gas \
+            --auth gas/.clasprc.json \
+            --description "CI ${GITHUB_SHA::7} @ ${GITHUB_REF_NAME}"
+
+      # ジョブが失敗しても認証ファイルを残さない。
+      - name: Clean up credentials
+        if: always()
+        run: rm -f gas/.clasp.json gas/.clasprc.json

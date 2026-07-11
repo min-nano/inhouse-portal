@@ -38,7 +38,8 @@ gas/
    ```
 2. **プロジェクトを用意**して `.clasp.json` を作る。どちらか:
    - 既存の Apps Script プロジェクトに紐付ける:
-     `gas/.clasp.json.example` を `gas/.clasp.json` にコピーし、`scriptId` を実 ID に置換。
+     `gas/.clasp.json.example` を `gas/.clasp.json` にコピーし、`${CLASP_SCRIPT_ID}` を
+     実 ID に置換。
    - 新規作成する(`gas/` 内で実行すると `.clasp.json` がこの階層に生成される):
      ```bash
      cd gas && npx clasp create-script --type webapp --title inhouse-portal-gas --rootDir src
@@ -62,3 +63,38 @@ gas/
 機能ごとの README を参照:
 
 - レジストリ: [`src/registry/README.md`](src/registry/README.md)
+
+## CI で自動デプロイ (GitHub Actions)
+
+`main` の `gas/**` 変更、または手動実行(workflow_dispatch)で
+[`.github/workflows/gas-deploy.yml`](../.github/workflows/gas-deploy.yml) が走り、
+`clasp push` → `clasp create-deployment` まで自動で行う。
+
+**認証情報・スクリプトIDはリポジトリに置かない。** コミットするのは
+プレースホルダ入りの `*.example` のみで、CI が GitHub Secrets から値を注入して
+実ファイル (`gas/.clasp.json` / `gas/.clasprc.json`、どちらも `.gitignore` 済み)を
+`scripts/render-template.mjs` で生成する。
+
+### 必要な Secrets(Settings → Secrets and variables → Actions)
+
+| Secret | 中身 | 取得元 |
+| --- | --- | --- |
+| `CLASP_SCRIPT_ID` | Apps Script の scriptId | エディタ URL / `gas/.clasp.json` の `scriptId` |
+| `CLASP_CLIENT_ID` | OAuth クライアント ID | 下記 `~/.clasprc.json` の `tokens.default.client_id` |
+| `CLASP_CLIENT_SECRET` | OAuth クライアントシークレット | 同 `tokens.default.client_secret` |
+| `CLASP_REFRESH_TOKEN` | リフレッシュトークン | 同 `tokens.default.refresh_token` |
+
+### リフレッシュトークンの取り出し方
+
+ローカルで一度 `npm run gas:login` すると `~/.clasprc.json` に v3 形式で保存される。
+その `tokens.default` から 3 値を取り出して Secrets に登録する:
+
+```bash
+# client_id / client_secret / refresh_token を表示(値は秘匿)
+node -e "const t=require(require('os').homedir()+'/.clasprc.json').tokens.default; console.log({client_id:t.client_id, client_secret:t.client_secret, refresh_token:t.refresh_token})"
+```
+
+> `clasp login` は clasp 内蔵の OAuth クライアントを使うため、`client_id` /
+> `client_secret` は clasp 既定値になる。独自 GCP クライアントを使う場合は
+> `clasp login --creds <oauth.json>` で取得した 3 値を登録する。3 値は必ず同じ
+> ログインで得たものを揃えること(refresh_token は発行元クライアントに紐づく)。

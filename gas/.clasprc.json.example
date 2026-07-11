@@ -1,0 +1,10 @@
+{
+  "tokens": {
+    "default": {
+      "type": "authorized_user",
+      "client_id": "${CLASP_CLIENT_ID}",
+      "client_secret": "${CLASP_CLIENT_SECRET}",
+      "refresh_token": "${CLASP_REFRESH_TOKEN}"
+    }
+  }
+}
