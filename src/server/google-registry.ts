@@ -43,6 +43,11 @@ export async function listUserScripts(
     url.searchParams.set("fields", "nextPageToken,files(id,name,modifiedTime)");
     url.searchParams.set("pageSize", String(pageSize));
     url.searchParams.set("orderBy", "modifiedTime desc");
+    // 共有ドライブ(Shared Drives)内の GAS も対象にする。既定 (corpora=user) は
+    // マイドライブしか見ないため、これらを付けないと共有ドライブ保管分は列挙されない。
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+    url.searchParams.set("corpora", "allDrives");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
     const res = await fetch(url.toString(), { headers });
