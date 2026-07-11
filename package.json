@@ -18,6 +18,7 @@
     "gas:push": "clasp push --project gas",
     "gas:pull": "clasp pull --project gas",
     "gas:deploy": "clasp create-deployment --project gas",
+    "gas:redeploy": "clasp redeploy --project gas",
     "gas:open": "clasp open-script --project gas"
   },
   "dependencies": {

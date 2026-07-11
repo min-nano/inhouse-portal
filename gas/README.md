@@ -56,7 +56,8 @@ gas/
 | `npm run gas:status` | push 対象になるファイルを確認 |
 | `npm run gas:push`   | ローカルの `src/` を Apps Script へ反映 |
 | `npm run gas:pull`   | Apps Script 側の変更をローカルへ取り込み |
-| `npm run gas:deploy` | 新しいデプロイ(バージョン)を作成 |
+| `npm run gas:deploy` | **新規**デプロイを作成(初回のみ。URL が新規発行される) |
+| `npm run gas:redeploy -- <デプロイID>` | 既存デプロイを更新(URL 固定)。CI と同じ挙動 |
 | `npm run gas:open`   | ブラウザで Apps Script エディタを開く |
 
 各機能のデプロイ設定やスクリプトプロパティ(例: レジストリの `SHARED_SECRET`)は
@@ -68,7 +69,12 @@ gas/
 
 `main` の `gas/**` 変更、または手動実行(workflow_dispatch)で
 [`.github/workflows/gas-deploy.yml`](../.github/workflows/gas-deploy.yml) が走り、
-`clasp push` → `clasp create-deployment` まで自動で行う。
+`clasp push` → `clasp redeploy <デプロイID>` まで自動で行う。
+
+**URL を固定するため、毎回新規デプロイを作らず既存のデプロイIDを更新する。**
+`redeploy` はバージョン番号を省略すると新バージョンを作成し、その版へ同じデプロイを
+差し替えるので、公開される `/exec` URL は変わらない(新規 `create-deployment` は
+毎回別 URL になってしまう)。
 
 **認証情報・スクリプトIDはリポジトリに置かない。** CI が GitHub Secrets から
 実ファイル (`gas/.clasp.json` / `gas/.clasprc.json`、どちらも `.gitignore` 済み)を
@@ -82,6 +88,7 @@ gas/
 | --- | --- | --- |
 | `CLASP_SCRIPT_ID` | Apps Script の scriptId | エディタ URL / `gas/.clasp.json` の `scriptId` |
 | `CLASP_CREDENTIALS` | `clasp login` が作る認証 JSON **丸ごと** | 下記参照(`~/.clasprc.json` の中身全体) |
+| `CLASP_DEPLOYMENT_ID` | 更新し続ける固定デプロイID(`AKfyc…`) | 下記「デプロイIDの用意」参照 |
 
 ### CLASP_CREDENTIALS の取り出し方
 
@@ -98,3 +105,21 @@ cat ~/.clasprc.json | pbcopy
 > 使う場合は `clasp login --creds <oauth.json>` でログインしてから、同様に
 > `~/.clasprc.json` を丸ごと登録すればよい(client_id / secret / refresh_token が
 > セットで入っているため、ファイル単位で扱えば整合性が崩れない)。
+
+### デプロイIDの用意(初回のみ)
+
+固定 URL の元になるデプロイを一度だけ作り、その **デプロイID** を
+`CLASP_DEPLOYMENT_ID` に登録する。以降は CI がこの ID を `redeploy` し続けるので
+URL は変わらない。
+
+```bash
+# ローカルで .clasp.json / .clasprc.json を用意した状態で(セットアップ手順参照):
+npm run gas:push                                  # 先にコードを反映
+npx clasp create-deployment --project gas \
+  --description "portal registry (stable)"        # 初回だけ新規作成
+npx clasp list-deployments --project gas          # 表示された AKfyc... がデプロイID
+```
+
+> `@HEAD`(テスト用)ではなく、バージョン付きデプロイの `AKfyc…` を登録すること。
+> Apps Script エディタの「デプロイを管理」からも同じIDを確認できる。
+> デプロイの Web アプリ設定(実行ユーザー=自分 / アクセス=全員)は初回に済ませておく。

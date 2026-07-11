@@ -56,9 +56,18 @@ jobs:
       - name: Push source to Apps Script
         run: npx clasp push --force --project gas --auth gas/.clasprc.json
 
-      - name: Create deployment
+      # 既存デプロイIDを更新する(新規作成しない)ことで /exec URL を固定する。
+      # redeploy は versionNumber 省略時に新バージョンを作り、その版へ同じデプロイを
+      # 差し替える(URL 不変)。デプロイIDは初回に一度だけ作成して Secret に登録する。
+      - name: Redeploy to the fixed deployment (stable URL)
+        env:
+          CLASP_DEPLOYMENT_ID: ${{ secrets.CLASP_DEPLOYMENT_ID }}
         run: |
-          npx clasp create-deployment \
+          if [ -z "$CLASP_DEPLOYMENT_ID" ]; then
+            echo "::error::Secret CLASP_DEPLOYMENT_ID is not set (create one deployment once, then register its id)."
+            exit 1
+          fi
+          npx clasp redeploy "$CLASP_DEPLOYMENT_ID" \
             --project gas \
             --auth gas/.clasprc.json \
             --description "CI ${GITHUB_SHA::7} @ ${GITHUB_REF_NAME}"
