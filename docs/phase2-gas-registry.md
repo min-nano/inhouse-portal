@@ -4,8 +4,9 @@
 > 「本人トークン保管済み → 方式B / それ以外 → 手動台帳のみ」の2段構成。
 >
 > **方式B: ユーザーモード(本人権限・per-userアクセス制御)** ↓「per-userで返す」で後述
-> - **ログイン時にDriveスコープを要求**(`REGISTRY_LOGIN_SCOPES=1`)し、得た本人のOAuth
->   トークンで **その人がアクセスできるGASだけ**を列挙する(`src/server/google-registry.ts`)。
+> - **ログイン時にDriveスコープを要求**(`AUTH_KV` バインド + Google OAuth 設定で自動有効化。
+>   専用フラグは無い)し、得た本人のOAuthトークンで **その人がアクセスできるGASだけ**を
+>   列挙する(`src/server/google-registry.ts`)。
 >   共有ドライブ内のGASも対象(`supportsAllDrives` / `includeItemsFromAllDrives` /
 >   `corpora=allDrives`)。
 > - リフレッシュトークンは AES-256-GCM で暗号化して KV に保管
@@ -119,7 +120,7 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
 ### フロー
 
 ```
-ログイン (/api/auth/login)  ※REGISTRY_LOGIN_SCOPES=1 のとき
+ログイン (/api/auth/login)  ※方式B有効時(AUTH_KV バインド + Google OAuth 設定)
    └─ Google 同意画面 (openid/email/profile + Driveスコープ, access_type=offline)
         └─ /api/auth/callback
              ├─ 通常のセッション発行(従来どおり)
@@ -147,9 +148,9 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
   復号不可**。`AUTH_SECRET` のローテートで全連携が実質失効する。
 - KVキーは email の **HMAC-SHA256(AUTH_SECRET 由来)**。平文PIIを使わず、かつ候補メールの
   総当たりで連携有無を判定されないようにする(許可リストの `emailHashes` と同方式)。
-- **ログイン時にスコープ要求**: 環境変数 `REGISTRY_LOGIN_SCOPES=1` を立てると、
-  ログイン同意でDriveスコープも一緒に要求する(opt-inの連携ボタンは無し)。フラグ未設定
-  または `AUTH_KV` 未バインド時は、従来どおり identity のみのログインになる。
+- **ログイン時にスコープ要求**: `AUTH_KV` バインド + Google OAuth 設定が揃うと方式Bが
+  自動的に有効になり(専用フラグは持たない)、ログイン同意でDriveスコープも一緒に要求する
+  (opt-inの連携ボタンは無し)。`AUTH_KV` 未バインド時は従来どおり identity のみのログイン。
 - **自動失効処理**: リフレッシュ失敗のうち `error=invalid_grant`(取消・失効)のときだけ
   保管トークンを削除する。`invalid_client`(secret設定ミス)や 429・5xx は一時障害として
   トークンを残す(設定を直せば復旧できるように)。

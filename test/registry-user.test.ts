@@ -89,12 +89,8 @@ afterEach(() => {
 });
 
 describe("ログイン時スコープ要求 (方式B)", () => {
-  it("REGISTRY_LOGIN_SCOPES 有効時、login は offline + Driveスコープを要求する", async () => {
-    const res = await app.request(
-      "/api/auth/login",
-      {},
-      baseEnv(memoryKV(), { REGISTRY_LOGIN_SCOPES: "1" }),
-    );
+  it("方式B有効時(AUTH_KV+Google設定あり)、login は offline + Driveスコープを要求する", async () => {
+    const res = await app.request("/api/auth/login", {}, baseEnv(memoryKV()));
     expect(res.status).toBe(302);
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("access_type")).toBe("offline");
@@ -104,11 +100,11 @@ describe("ログイン時スコープ要求 (方式B)", () => {
     );
   });
 
-  it("フラグ無効時は従来どおり identity スコープのみ", async () => {
+  it("AUTH_KV 未設定なら従来どおり identity スコープのみ", async () => {
     const res = await app.request(
       "/api/auth/login",
       {},
-      baseEnv(memoryKV()),
+      baseEnv(memoryKV(), { AUTH_KV: undefined }),
     );
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("access_type")).toBeNull();
@@ -117,7 +113,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
 
   it("コールバックでリフレッシュトークンを暗号化保管する", async () => {
     const kv = memoryKV();
-    const env = baseEnv(kv, { REGISTRY_LOGIN_SCOPES: "1" });
+    const env = baseEnv(kv);
 
     // login で state と oauth cookie を得る
     const login = await app.request("/api/auth/login", {}, env);
@@ -164,7 +160,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
 
   it("granular consent でDriveスコープを外された場合はトークンを保管しない", async () => {
     const kv = memoryKV();
-    const env = baseEnv(kv, { REGISTRY_LOGIN_SCOPES: "1" });
+    const env = baseEnv(kv);
     const login = await app.request("/api/auth/login", {}, env);
     const state = new URL(login.headers.get("location")!).searchParams.get(
       "state",
@@ -206,7 +202,7 @@ describe("ログイン時スコープ要求 (方式B)", () => {
     const res = await app.request(
       "/api/auth/login?reconnect=1",
       {},
-      baseEnv(memoryKV(), { REGISTRY_LOGIN_SCOPES: "1" }),
+      baseEnv(memoryKV()),
     );
     const loc = new URL(res.headers.get("location")!);
     expect(loc.searchParams.get("prompt")).toBe("consent");

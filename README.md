@@ -200,11 +200,13 @@ Drive/Apps Script API を直接叩く。共有レジストリGAS(全員同じ一
 自動取得分には「自動」バッジが付く。
 
 - 有効化(2ステップ):
-  1. Google Cloud の OAuth 同意画面にスコープ `drive.metadata.readonly` /
-     `script.deployments.readonly` を追加する(**追加前に手順2を有効化すると `invalid_scope`
-     でログインが失敗する**ので順序に注意)。外部協力者にも配るには「外部」+ Google審査が必要。
-  2. Pages の環境変数 **`REGISTRY_LOGIN_SCOPES=1`** を設定し、**`AUTH_KV`** をバインドする
-     (トークン保管先)。以後、各ユーザーはログイン同意でDriveスコープに同意する。
+  1. **`AUTH_KV`** をバインドする(リフレッシュトークンの保管先)。これと Google OAuth 設定
+     (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`)が揃うと方式Bは自動的に有効になる
+     (専用フラグは無い)。以後、各ユーザーはログイン同意でDriveスコープに同意する。
+  2. Google Cloud の OAuth 同意画面にスコープ `drive.metadata.readonly` /
+     `script.deployments.readonly` を追加する(**追加前に `AUTH_KV` をバインドすると
+     `invalid_scope` でログインが失敗する**ので、先に同意画面へスコープを足すこと)。
+     外部協力者にも配るには「外部」+ Google審査が必要。
 - 利用者側: 初回ログインで同意 → `https://script.google.com/home/usersettings` で
   Apps Script API を有効化(未有効なら画面にヒント表示)。
 - 共有ドライブ: スクリプトを共有ドライブに置いていても、Drive API を

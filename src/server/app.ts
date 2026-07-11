@@ -72,14 +72,6 @@ export type Env = {
   /** 許可リスト(運用中に追加・失効する分)を置くKV。GAS本人モードのトークン保管にも使う */
   AUTH_KV?: KVNamespace;
   /**
-   * "1"/"true" でログイン時に GASレジストリ用スコープ
-   * (drive.metadata.readonly / script.deployments.readonly)を要求し、
-   * リフレッシュトークンを暗号化して AUTH_KV に保管する(方式B: 本人権限での自動列挙)。
-   * 有効化前に OAuth 同意画面へ当該スコープを追加しておくこと(未追加だと invalid_scope で
-   * ログインが失敗する)。AUTH_KV 未設定時はこのフラグは無視される。
-   */
-  REGISTRY_LOGIN_SCOPES?: string;
-  /**
    * プレビュー(pages.dev)で Cloudflare Access のトークンを署名検証するための設定。
    * 設定すると presence チェックから厳密な RS256 署名検証に格上げされる。
    * - CF_ACCESS_TEAM_DOMAIN: "myteam" 等(iss を固定)
@@ -115,20 +107,15 @@ function googleConfig(c: AppContext): GoogleConfig | null {
   };
 }
 
-function truthy(v: string | undefined): boolean {
-  return v === "1" || v?.toLowerCase() === "true";
-}
-
 /**
- * ログイン時に GASレジストリ用スコープを要求し、リフレッシュトークンを保管する
- * 方式B が有効かどうか。フラグ + トークン保管先(AUTH_KV) + Google設定が揃って初めて有効。
+ * 方式B(本人権限での GAS 自動列挙)が有効かどうか。ログイン時に Drive スコープを
+ * 要求しリフレッシュトークンを保管する。トークン保管先(AUTH_KV)と Google 設定が
+ * 揃えば常に有効(方式Bのみ採用のため専用フラグは持たない)。
+ * 有効化前に OAuth 同意画面へ当該スコープ(drive.metadata.readonly /
+ * script.deployments.readonly)を追加しておくこと(未追加だと invalid_scope で失敗)。
  */
 function registryLoginEnabled(c: AppContext): boolean {
-  return (
-    truthy(c.env.REGISTRY_LOGIN_SCOPES) &&
-    !!c.env.AUTH_KV &&
-    googleConfig(c) !== null
-  );
+  return !!c.env.AUTH_KV && googleConfig(c) !== null;
 }
 
 /** 現在のログインユーザー(自前セッション)を返す。無ければ null。 */
