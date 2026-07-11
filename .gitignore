@@ -5,7 +5,3 @@ coverage/
 .dev.vars
 *.log
 .DS_Store
-
-# clasp (Apps Script) — 実プロジェクトIDと認証情報はコミットしない
-gas/.clasp.json
-.clasprc.json

@@ -9,7 +9,6 @@ import {
 import { parseProxyTargets, proxyRequest } from "./proxy";
 import {
   edgeCache,
-  fetchGasRegistry,
   listPortalCategories,
   mergeAutoApps,
   type GasApp,
@@ -91,9 +90,6 @@ export type Env = {
 };
 
 type AppContext = Context<{ Bindings: Env }>;
-
-/** PROXY_TARGETS 内で GASレジストリのエンドポイントを指すキー名。 */
-const REGISTRY_TARGET_KEY = "registry";
 
 function isHttps(c: AppContext): boolean {
   return new URL(c.req.url).protocol === "https:";
@@ -395,9 +391,8 @@ export function createApp(registry: Registry) {
   //
   // 取得元は次の優先順位:
   //   1. ユーザーモード(方式B): 本人が Google Drive 連携済みなら、本人の権限で
-  //      「その人がアクセスできる GAS」だけを列挙する(per-user アクセス制御)。
-  //   2. 共有モード: PROXY_TARGETS["registry"] の共有レジストリGASをプロキシ。
-  //   3. 手動のみ: どちらも無ければ apps.json だけを返す。
+  //      「その人がアクセスできる GAS」(共有ドライブ内含む)だけを列挙する。
+  //   2. 手動のみ: 連携が無ければ apps.json だけを返す。
   // いずれの失敗時も手動分は必ず返し、画面を壊さない。
   app.get("/api/registry", async (c) => {
     const config = resolveGasRegistryConfig(registry);
@@ -451,30 +446,8 @@ export function createApp(registry: Registry) {
       }
     }
 
-    // ---- 2. 共有モード(PROXY_TARGETS["registry"]) ----
-    let registryUrl: string | undefined;
-    try {
-      registryUrl = parseProxyTargets(c.env.PROXY_TARGETS)[REGISTRY_TARGET_KEY];
-    } catch {
-      return manualOnly({ mode: "manual", registryConfigured: false });
-    }
-    if (!registryUrl) {
-      return manualOnly({ mode: "manual", registryConfigured: false });
-    }
-    try {
-      const { apps: autoApps } = await fetchGasRegistry(registryUrl);
-      return mergedResponse(autoApps, {
-        mode: "shared",
-        registryConfigured: true,
-      });
-    } catch (err) {
-      console.warn("registry shared mode failed:", err);
-      return manualOnly({
-        mode: "shared",
-        registryConfigured: true,
-        stale: true,
-      });
-    }
+    // ---- 2. 手動のみ(方式B未連携) ----
+    return manualOnly({ mode: "manual" });
   });
 
 

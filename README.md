@@ -191,56 +191,42 @@ npx wrangler pages secret put PROXY_TARGETS
 
 → ポータルからは `/api/proxy/kintai-api?…` で呼び出せる (GET/POSTのみ)。
 
-### GAS一覧の自動取得 (Phase 2)
+### GAS一覧の自動取得 (Phase 2) — 本人権限モード
 
-デプロイ済みGAS Webアプリを手動で `apps.json` に書かずに自動列挙する。「レジストリ」役の
-GAS Webアプリ (`gas/src/registry/`) が自分のGASプロジェクトを Drive API + Apps Script API で
-列挙し、ポータルの `/api/registry` がそれをプロキシ+キャッシュ(5分)して手動台帳と
-マージ表示する(自動取得分には「自動」バッジが付く)。GAS 側コードは単一の Apps Script
-プロジェクトに集約し **clasp** で管理する(全体の手順は [`gas/README.md`](gas/README.md))。
-
-1. `gas/` を clasp で Apps Script プロジェクトに push し、Webアプリとしてデプロイ
-   (手順は [`gas/README.md`](gas/README.md) と [`gas/src/registry/README.md`](gas/src/registry/README.md))。
-   **匿名公開されるためスクリプトプロパティ `SHARED_SECRET` の設定は必須**(未設定だと拒否される)。
-2. デプロイURLを `PROXY_TARGETS` の `registry` キーに登録(`?token=` に上の秘密を付ける):
-   ```bash
-   npx wrangler pages secret put PROXY_TARGETS
-   # 入力例: {"registry":"https://script.google.com/macros/s/XXXX/exec?token=秘密"}
-   ```
-3. 除外・表示名の上書きは `data/apps.json` の `gasRegistry` で調整:
-   ```json
-   {
-     "apps": [ ... ],
-     "gasRegistry": {
-       "exclude": ["除外したいscriptId"],
-       "overrides": { "あるscriptId": { "name": "表示名", "category": "設計ツール" } }
-     }
-   }
-   ```
-
-`registry` が未登録のときは `/api/registry` は手動台帳のみを返すので、設定前でも画面は動く。
-
-#### 方式B: 本人権限での自動取得 (per-userアクセス制御)
-
-共有レジストリ(全員同じ一覧)ではなく、**ログイン中の本人がアクセスできるGASだけ**を
-表示したい場合はこちら。**ログイン時に Drive スコープを一緒に要求**し、得たトークンで
-Cloudflare が Drive/Apps Script API を叩いて本人のGASを列挙する。共有レジストリGASは不要。
+デプロイ済みGAS Webアプリを手動で `apps.json` に書かずに自動列挙する。**ログイン中の本人が
+アクセスできるGASだけ**(共有ドライブ内のものを含む)を、本人の Google 権限で列挙する
+方式(方式B)。**ログイン時に Drive スコープを一緒に要求**し、得たトークンで Cloudflare が
+Drive/Apps Script API を直接叩く。共有レジストリGAS(全員同じ一覧を返す旧方式)は使わない。
+自動取得分には「自動」バッジが付く。
 
 - 有効化(2ステップ):
   1. Google Cloud の OAuth 同意画面にスコープ `drive.metadata.readonly` /
      `script.deployments.readonly` を追加する(**追加前に手順2を有効化すると `invalid_scope`
-     でログインが失敗する**ので順序に注意)。**同意画面を「内部」にすれば審査不要**(同一
-     Workspace 組織メンバー限定)。外部協力者にも配るには「外部」+ Google審査が必要。
+     でログインが失敗する**ので順序に注意)。外部協力者にも配るには「外部」+ Google審査が必要。
   2. Pages の環境変数 **`REGISTRY_LOGIN_SCOPES=1`** を設定し、**`AUTH_KV`** をバインドする
      (トークン保管先)。以後、各ユーザーはログイン同意でDriveスコープに同意する。
 - 利用者側: 初回ログインで同意 → `https://script.google.com/home/usersettings` で
   Apps Script API を有効化(未有効なら画面にヒント表示)。
+- 共有ドライブ: スクリプトを共有ドライブに置いていても、Drive API を
+  `supportsAllDrives` / `includeItemsFromAllDrives` / `corpora=allDrives` 付きで叩くため、
+  本人がメンバーの共有ドライブ内GASも列挙される(`src/server/google-registry.ts`)。
 - 安全性: リフレッシュトークンは `AUTH_SECRET` 由来の鍵で **AES-256-GCM 暗号化して KV に保管**
   (KV単体では復号不可)。ブラウザには出さない。失効(取消)時は自動でトークン削除。
-- 優先順位: 本人のトークン保管済みなら方式B、無ければ方式A(共有)/手動へ自動フォールバック。
+- フォールバック: 本人のトークンが無い/取得失敗時は手動台帳(`apps.json`)のみを返すので、
+  連携前でも画面は動く。
+- 除外・表示名の上書きは `data/apps.json` の `gasRegistry` で調整:
+  ```json
+  {
+    "apps": [ ... ],
+    "gasRegistry": {
+      "exclude": ["除外したいscriptId"],
+      "overrides": { "あるscriptId": { "name": "表示名", "category": "設計ツール" } }
+    }
+  }
+  ```
 
 詳細と運用上の制約(同意画面の公開ステータスとトークン失効等)は
-[docs/phase2-gas-registry.md](docs/phase2-gas-registry.md) の「方式B」を参照。
+[docs/phase2-gas-registry.md](docs/phase2-gas-registry.md) を参照。
 
 ### 手動デプロイ
 

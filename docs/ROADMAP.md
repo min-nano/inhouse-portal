@@ -37,21 +37,20 @@
 
 詳細設計: `docs/phase2-gas-registry.md`
 
-- [x] GAS側: Drive API + Apps Script API で自分のGASプロジェクトと
-      WebアプリデプロイURLを列挙して返すレジストリWebアプリを作成
-      → ソース `gas/src/registry/` (`Code.gs`)。GAS は単一 Apps Script プロジェクトに
-      集約し clasp 管理(`gas/` / マニフェスト `gas/src/appsscript.json`)。
-      デプロイ URL を `PROXY_TARGETS["registry"]` に登録すると有効化される
-- [x] Functions側: `PROXY_TARGETS` にレジストリを登録し、`/api/registry` として
-      プロキシ+キャッシュ(Cache API, 5分)。zodで検証し apps.json とマージして返す
-- [x] ポータル画面: 手動台帳(apps.json)と自動取得分をマージ表示
-      (自動取得分には「自動」バッジ)。取得失敗時も手動分は表示(ベストエフォート)
-- [x] 除外リスト・表示名の上書き機構
-      (`data/apps.json` の `gasRegistry.exclude` / `gasRegistry.overrides`)
-- [x] 方式B(ユーザーモード): **ログイン時にDriveスコープを要求**(`REGISTRY_LOGIN_SCOPES=1`)し、
+- [x] 方式B(ユーザーモード)を採用: **ログイン時にDriveスコープを要求**(`REGISTRY_LOGIN_SCOPES=1`)し、
       本人権限で **その人がアクセスできるGASだけ**を列挙(per-userアクセス制御)。
+      共有ドライブ内GASも対象(Drive APIの `supportsAllDrives`/`includeItemsFromAllDrives`/
+      `corpora=allDrives`)。列挙は `src/server/google-registry.ts`。
       リフレッシュトークンはAES-256-GCMで暗号化してKV保管、失効時は自動削除。
       ※センシティブスコープのため実質 Workspace メンバー向け(詳細 `docs/phase2-gas-registry.md`)
+- [x] Functions側: `/api/registry` が方式Bの結果を apps.json とマージして返す
+      (`src/server/gas-registry.ts`)。取得失敗時も手動分は返す(ベストエフォート)
+- [x] ポータル画面: 手動台帳(apps.json)と自動取得分をマージ表示
+      (自動取得分には「自動」バッジ)
+- [x] 除外リスト・表示名の上書き機構
+      (`data/apps.json` の `gasRegistry.exclude` / `gasRegistry.overrides`)
+- [x] ~~方式A(共有レジストリGAS + clasp/CIデプロイ + `PROXY_TARGETS["registry"]` プロキシ)~~
+      → 方式Bで共有ドライブ内GASを列挙できるため**廃止・削除済み**
 
 ## Phase 3: グループウェア機能の拡張 (必要になったものから)
 

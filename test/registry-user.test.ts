@@ -337,7 +337,7 @@ describe("GET /api/registry (ユーザーモード)", () => {
     expect(body.source.appsScriptApiDisabled).toBe(true);
   });
 
-  it("未ログインは手動/共有へフォールバック(ユーザーモードに入らない)", async () => {
+  it("未ログインは手動へフォールバック(ユーザーモードに入らない)", async () => {
     const res = await app.request("/api/registry", {}, baseEnv(kv));
     const body = (await res.json()) as { source: { mode: string } };
     expect(body.source.mode).not.toBe("user");

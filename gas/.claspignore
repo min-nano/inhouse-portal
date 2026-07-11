@@ -1,5 +1,0 @@
-# clasp が Apps Script プロジェクトへ push しないファイル。
-# パターンは rootDir (src/) からの相対。push 対象は appsscript.json と
-# .gs/.js/.html のみで、ここでドキュメント類を明示的に除外しておく。
-**/*.md
-**/.DS_Store

@@ -12,21 +12,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "deploy": "npm run build && wrangler pages deploy dist/client --project-name inhouse-portal",
-    "gas:login": "clasp login",
-    "gas:status": "clasp status --project gas",
-    "gas:push": "clasp push --project gas",
-    "gas:pull": "clasp pull --project gas",
-    "gas:deploy": "clasp create-deployment --project gas",
-    "gas:redeploy": "clasp redeploy --project gas",
-    "gas:open": "clasp open-script --project gas"
+    "deploy": "npm run build && wrangler pages deploy dist/client --project-name inhouse-portal"
   },
   "dependencies": {
     "hono": "^4.6.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@google/clasp": "^3.3.0",
     "@vitest/coverage-v8": "^3.2.7",
     "typescript": "^5.6.0",
     "vite": "^6.0.0",

@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  fetchGasRegistry,
   listPortalCategories,
   mergeAutoApps,
-  parseGasRegistry,
   type GasApp,
 } from "../src/server/gas-registry";
 import { resolveGasRegistryConfig, loadRegistry } from "../src/server/registry";
@@ -32,23 +30,6 @@ const emptyConfig = resolveGasRegistryConfig(loadRegistry({ apps: [] }));
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-describe("parseGasRegistry", () => {
-  it("正しい応答を検証して返す", () => {
-    const res = parseGasRegistry({ apps: [gasApp()] });
-    expect(res.apps[0]?.scriptId).toBe("ABC123");
-  });
-
-  it("https以外のurlを拒否する", () => {
-    expect(() =>
-      parseGasRegistry({ apps: [gasApp({ url: "http://x.example/exec" })] }),
-    ).toThrow();
-  });
-
-  it("appsキーが無い応答を拒否する", () => {
-    expect(() => parseGasRegistry({})).toThrow();
-  });
 });
 
 describe("mergeAutoApps", () => {
@@ -126,36 +107,16 @@ describe("listPortalCategories", () => {
   });
 });
 
-describe("fetchGasRegistry", () => {
-  it("上流を取得して検証済み応答を返す(cachesなし環境)", async () => {
-    const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) =>
-        new Response(JSON.stringify({ apps: [gasApp()] }), { status: 200 }),
+describe("mergeAutoApps: 信頼できない url の除外", () => {
+  it("許可ホスト以外・https以外の自動エントリは除外する", () => {
+    const merged = mergeAutoApps(
+      [],
+      [
+        gasApp({ scriptId: "EVIL", url: "https://evil.example/exec" }),
+        gasApp({ scriptId: "HTTP", url: "http://script.google.com/x/exec" }),
+      ],
+      emptyConfig,
     );
-    vi.stubGlobal("fetch", fetchMock);
-    const res = await fetchGasRegistry("https://script.google.com/macros/s/R/exec");
-    expect(res.apps[0]?.scriptId).toBe("ABC123");
-    const [, init] = fetchMock.mock.calls[0]!;
-    expect(init?.redirect).toBe("follow");
-  });
-
-  it("上流が非200なら throw する", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("err", { status: 500 })),
-    );
-    await expect(
-      fetchGasRegistry("https://script.google.com/macros/s/R/exec"),
-    ).rejects.toThrow();
-  });
-
-  it("壊れた応答は throw する(検証失敗)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ nope: true }), { status: 200 })),
-    );
-    await expect(
-      fetchGasRegistry("https://script.google.com/macros/s/R/exec"),
-    ).rejects.toThrow();
+    expect(merged.filter((a) => a.auto)).toHaveLength(0);
   });
 });

@@ -6,8 +6,7 @@ type AppsResponse = {
   source?: {
     manual: number;
     auto: number;
-    mode?: "user" | "shared" | "manual";
-    registryConfigured?: boolean;
+    mode?: "user" | "manual";
     stale?: boolean;
     userAuthExpired?: boolean;
     appsScriptApiDisabled?: boolean;
@@ -85,7 +84,7 @@ function renderApps() {
         const badge = document.createElement("span");
         badge.className = "app-badge";
         badge.textContent = "自動";
-        badge.title = "GASレジストリから自動取得したツールです";
+        badge.title = "あなたがアクセスできるGASから自動取得したツールです";
         meta.append(badge);
       }
 
