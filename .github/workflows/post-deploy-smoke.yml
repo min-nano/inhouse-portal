@@ -1,9 +1,10 @@
 name: Post-deploy smoke (auth gate)
 
-# デプロイ後に「認証がかかっていること」を外形で検証する。
-# 未認証アクセスが弾かれること + Zero Trust(Cloudflare Access)を偽装した
-# ヘッダでも素通りしないことを確認する。本番とプレビューで認証モデルが違うため
-# scripts/smoke.mjs をモード分けして実行する(本番=厳密ステータス / プレビュー=ブロック確認)。
+# デプロイ後に「認証(Clerk)がかかっていること」を外形で検証する。
+# 未認証アクセスが弾かれることを確認する。本番は Clerk の production インスタンス、
+# プレビューは development インスタンスでゲートされるため scripts/smoke.mjs をモード分けして
+# 実行する(本番=厳密ステータス / プレビュー=ブロック確認)。認証は Clerk がアプリ層で
+# 一律にゲートするので、カスタムドメインでも pages.dev でも判定は同じになる。
 #
 # トリガー: Cloudflare Pages はデプロイ結果を GitHub の **Check Run** で通知する
 # (GitHub App "cloudflare-workers-and-pages" が "Cloudflare Pages" という check run を発行)。

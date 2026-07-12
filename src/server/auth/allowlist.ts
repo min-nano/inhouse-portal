@@ -184,15 +184,23 @@ export async function resolveAllowlist(
     ]),
   ];
 
-  // env の個別メール + KV の平文(後方互換)をハッシュ化し、KV の emailHashes と統合
-  const plaintextEmails = [
-    ...parseEmailsEnv(env.ALLOWED_EMAILS, env.ALLOWED_EMAIL_DOMAINS),
-    ...fromKV.legacyEmails,
-  ];
+  // env の個別メール + KV の平文(後方互換)をハッシュ化し、KV の emailHashes と統合。
+  // secret が無い(= 個別メール許可リストを使わない・ドメインのみ運用)なら、平文メールの
+  // ハッシュ化はスキップする(HMAC 鍵が無いので照合もできない)。`*@example.co.jp` のような
+  // ワイルドカードは parseDomainsEnv 側でドメイン規則になるため、ドメイン一致は維持される。
+  const plaintextEmails = secret
+    ? [
+        ...parseEmailsEnv(env.ALLOWED_EMAILS, env.ALLOWED_EMAIL_DOMAINS),
+        ...fromKV.legacyEmails,
+      ]
+    : [];
   const hashed = await Promise.all(
     plaintextEmails.map((e) => allowlistEmailHash(e, secret)),
   );
-  const emailHashes = new Set([...fromKV.emailHashes, ...hashed]);
+  const emailHashes = new Set([
+    ...(secret ? fromKV.emailHashes : []),
+    ...hashed,
+  ]);
 
   return { domains, emailHashes };
 }
@@ -215,7 +223,7 @@ export async function isAllowed(
   secret: string,
 ): Promise<boolean> {
   if (allowlist.domains.some((rule) => matchesDomain(email, rule))) return true;
-  if (allowlist.emailHashes.size === 0) return false;
+  if (allowlist.emailHashes.size === 0 || !secret) return false;
   const hash = await allowlistEmailHash(email, secret);
   return allowlist.emailHashes.has(hash);
 }

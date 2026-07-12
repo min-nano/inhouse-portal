@@ -1,22 +1,38 @@
-import { describe, expect, it, vi } from "vitest";
-import { onRequest } from "../functions/_middleware";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Clerk ラッパーはモックし、middleware のゲート判定(handshake / 許可リスト / 302・401・403 /
+// fail-closed)だけを検証する。許可リスト照合は本物(env のドメイン)を使う。
+vi.mock("../src/server/auth/clerk", () => ({
+  authenticate: vi.fn(),
+}));
+
+import { authenticate } from "../src/server/auth/clerk";
+import { onRequest, resetAllowlistCache } from "../functions/_middleware";
 import type { Env } from "../src/server/app";
-import { createSessionToken, SESSION_COOKIE } from "../src/server/auth/session";
+import type { ClerkAuth } from "../src/server/auth/clerk";
 
-const SECRET = "test-secret-value-do-not-use-in-prod";
-
+const authMock = authenticate as unknown as ReturnType<typeof vi.fn>;
 const NEXT = new Response("SERVED", { status: 200 });
 
 function makeContext(request: Request, env: Partial<Env> = {}) {
   const next = vi.fn(async () => NEXT);
-  return {
-    context: { request, env: env as Env, next },
-    next,
-  };
+  return { context: { request, env: env as Env, next }, next };
 }
 
-describe("_middleware auth gate", () => {
-  it("AUTH_SECRET 未設定は fail-closed (503, next呼ばない)", async () => {
+function setAuth(result: ClerkAuth) {
+  authMock.mockResolvedValue(result);
+}
+
+const ALLOW_ENV: Partial<Env> = { ALLOWED_EMAIL_DOMAINS: "*@example.co.jp" };
+
+beforeEach(() => {
+  authMock.mockReset();
+  resetAllowlistCache();
+});
+
+describe("_middleware auth gate (Clerk)", () => {
+  it("Clerk 未設定は fail-closed (503, next呼ばない)", async () => {
+    setAuth({ configured: false });
     const { context, next } = makeContext(
       new Request("https://portal.example.com/"),
     );
@@ -25,100 +41,111 @@ describe("_middleware auth gate", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("公開パス(/api/auth/login)は認証なしで通す", async () => {
+  it("公開パス(/api/health)は認証なしで通す(authenticate も呼ばない)", async () => {
     const { context, next } = makeContext(
-      new Request("https://portal.example.com/api/auth/login"),
-      { AUTH_SECRET: SECRET },
+      new Request("https://portal.example.com/api/health"),
+      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res).toBe(NEXT);
     expect(next).toHaveBeenCalledOnce();
+    expect(authMock).not.toHaveBeenCalled();
   });
 
-  it("有効なセッションCookieがあれば通す", async () => {
-    const token = await createSessionToken(
-      { email: "taro@example.co.jp" },
-      SECRET,
-      24,
-    );
+  it("handshake は Clerk のヘッダをそのまま返す(307)", async () => {
+    const headers = new Headers({ location: "https://clerk.example/handshake" });
+    setAuth({ configured: true, status: "handshake", headers });
     const { context, next } = makeContext(
       new Request("https://portal.example.com/", {
-        headers: { cookie: `${SESSION_COOKIE}=${token}` },
+        headers: { accept: "text/html" },
       }),
-      { AUTH_SECRET: SECRET },
+      ALLOW_ENV,
+    );
+    const res = await onRequest(context);
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("https://clerk.example/handshake");
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("サインイン済み + 許可リスト合致なら通す", async () => {
+    setAuth({
+      configured: true,
+      status: "signed-in",
+      client: {} as never,
+      userId: "u1",
+      email: "taro@example.co.jp",
+      headers: new Headers(),
+    });
+    const { context, next } = makeContext(
+      new Request("https://portal.example.com/"),
+      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res).toBe(NEXT);
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it("未認証の画面遷移はログインへ302 (redirect付き)", async () => {
+  it("サインイン済みでも許可リスト外は 403", async () => {
+    setAuth({
+      configured: true,
+      status: "signed-in",
+      client: {} as never,
+      userId: "u2",
+      email: "stranger@evil.example",
+      headers: new Headers(),
+    });
+    const { context, next } = makeContext(
+      new Request("https://portal.example.com/", {
+        headers: { accept: "text/html" },
+      }),
+      ALLOW_ENV,
+    );
+    const res = await onRequest(context);
+    expect(res.status).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("未サインインの画面遷移は Clerk サインインへ 302 (redirect_url付き)", async () => {
+    setAuth({
+      configured: true,
+      status: "signed-out",
+      signInUrl: "https://accounts.example.dev/sign-in",
+      headers: new Headers(),
+    });
     const { context, next } = makeContext(
       new Request("https://portal.example.com/tools?x=1", {
         headers: { accept: "text/html" },
       }),
-      { AUTH_SECRET: SECRET },
+      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res.status).toBe(302);
     const loc = new URL(res.headers.get("location")!);
-    expect(loc.pathname).toBe("/api/auth/login");
-    expect(loc.searchParams.get("redirect")).toBe("/tools?x=1");
+    expect(loc.origin + loc.pathname).toBe(
+      "https://accounts.example.dev/sign-in",
+    );
+    expect(loc.searchParams.get("redirect_url")).toBe(
+      "https://portal.example.com/tools?x=1",
+    );
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("未認証のAPIリクエストは401(JSON)", async () => {
+  it("未サインインの API リクエストは 401(JSON)", async () => {
+    setAuth({
+      configured: true,
+      status: "signed-out",
+      signInUrl: "https://accounts.example.dev/sign-in",
+      headers: new Headers(),
+    });
     const { context, next } = makeContext(
       new Request("https://portal.example.com/api/apps", {
         headers: { accept: "application/json" },
       }),
-      { AUTH_SECRET: SECRET },
+      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res.status).toBe(401);
     expect(res.headers.get("content-type")).toContain("application/json");
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it("pages.dev + Accessヘッダでも team domain/aud 未設定ならスルーしない(本番pages.devエイリアスの偽装対策)", async () => {
-    const { context, next } = makeContext(
-      new Request("https://inhouse-portal.pages.dev/", {
-        headers: { accept: "text/html", "Cf-Access-Jwt-Assertion": "forged" },
-      }),
-      { AUTH_SECRET: SECRET },
-    );
-    const res = await onRequest(context);
-    expect(res.status).toBe(302);
-    expect(new URL(res.headers.get("location")!).pathname).toBe(
-      "/api/auth/login",
-    );
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it("Access アサーション無しの pages.dev は OAuth にフォールバック", async () => {
-    const { context, next } = makeContext(
-      new Request("https://preview-branch.inhouse-portal.pages.dev/", {
-        headers: { accept: "text/html" },
-      }),
-      { AUTH_SECRET: SECRET },
-    );
-    const res = await onRequest(context);
-    expect(res.status).toBe(302);
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it("カスタムドメインは Access ヘッダが偽装されても OAuth を要求(fail-safe)", async () => {
-    const { context, next } = makeContext(
-      new Request("https://portal.example.co.jp/api/apps", {
-        headers: {
-          accept: "application/json",
-          "Cf-Access-Jwt-Assertion": "forged",
-        },
-      }),
-      { AUTH_SECRET: SECRET },
-    );
-    const res = await onRequest(context);
-    expect(res.status).toBe(401);
     expect(next).not.toHaveBeenCalled();
   });
 });

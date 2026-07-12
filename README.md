@@ -2,21 +2,21 @@
 
 事務所内+委託協力者向けのポータルサイト。設計ツール等(主にGAS Webアプリ)への
 リンクを1か所にまとめ、Cloudflare Pages + Functions でホスティングし、
-**Google ログイン(内製認証)** でアクセス制限をかける。
+**Clerk(Google ログイン)** でアクセス制限をかける。
 
 - 制作方針: [docs/PROPOSAL.md](docs/PROPOSAL.md)
 - ロードマップ: [docs/ROADMAP.md](docs/ROADMAP.md)
-- 認証 (Google OAuth) 設計・設定: [docs/auth-internal.md](docs/auth-internal.md)
+- 認証 (Clerk) 設計・設定: [docs/auth-internal.md](docs/auth-internal.md)
 - Phase 2 (GAS自動列挙) 設計: [docs/phase2-gas-registry.md](docs/phase2-gas-registry.md)
 
 ## アーキテクチャ
 
 ```
 ユーザー → [Cloudflare Pages + Functions]
-             └─ functions/_middleware.ts … 全リクエストの認証ゲート (Google OAuth)
+             └─ functions/_middleware.ts … 全リクエストの認証ゲート (Clerk)
                   ├─ 認証済み → 静的アセット (ポータル画面) … Pagesが配信
                   └─ /api/*
-                       ├─ GET  /api/auth/login|callback|logout … ログイン導線
+                       ├─ GET  /api/auth/logout … ログアウト (Clerk セッション失効)
                        ├─ GET  /api/me         … ログイン中ユーザー
                        ├─ GET  /api/apps       … 台帳 (data/apps.json)
                        ├─ GET  /api/registry   … 台帳＋GAS自動列挙のマージ (Phase 2)
@@ -24,15 +24,17 @@
 ```
 
 認証ゲート `functions/_middleware.ts` が **静的な画面ファイルを含む全リクエスト** に
-割り込み、自前セッション(HMAC署名Cookie)を検証する。`/api/*` は
-`functions/api/[[route]].ts` (Hono) が処理し、認証を通過した静的アセットは Pages が
-`dist/client` から直接配信する。
+割り込み、Clerk のセッション(`@clerk/backend` の `authenticateRequest`)を検証する。
+ログイン画面は Clerk の hosted サインイン(Account Portal)に委ね、未サインインの画面遷移は
+middleware が Clerk のサインインURLへ 302 する。`/api/*` は `functions/api/[[route]].ts`
+(Hono) が処理し、認証を通過した静的アセットは Pages が `dist/client` から直接配信する。
 
-> 💡 **なぜ Cloudflare Access ではなく内製認証か**: Access は Cloudflare
-> アカウント内のホスト名しか保護できず、外部DNSに CNAME で割り当てた
-> カスタムドメインは対象にできない(有料の Partial CNAME setup が必要)。
-> ネームサーバ移管を避ける本構成と両立させるため認証をアプリ層で実装した。
-> 詳細と設定手順は [docs/auth-internal.md](docs/auth-internal.md)。
+> 💡 **なぜ Clerk か**: 以前は「本番=自前 Google OAuth / プレビュー=Cloudflare Access
+> (Zero Trust)」と環境で使い分けていたが、2つの認証系を維持する実装が複雑すぎた。Clerk は
+> アプリ層で動くため**全ホストを同一コードで一律にゲート**でき、**無料枠(MAU 10,000)** で
+> 運用できる。production インスタンスはサブドメインを CNAME 追加するだけ(ネームサーバ移管
+> 不要)なので、外部DNSの Pages 構成と両立する。詳細は
+> [docs/auth-internal.md](docs/auth-internal.md)。
 
 ## アプリの追加・修正
 
@@ -74,9 +76,8 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 > 無効化される**ため、KV バインディング等をダッシュボードで運用したい本プロジェクトでは
 > 意図的に削除している。代わりに以下をすべて **Cloudflare ダッシュボード**で設定する:
 > - **Settings → Functions → Compatibility date**: `2026-06-01`(Functions の実行時互換日)
-> - **Settings → Functions → KV namespace bindings**: binding 名 `AUTH_KV`(任意・許可リスト用)。
->   GAS自動列挙(方式B)を使う場合はトークン保管用に `REGISTRY_KV` も別途バインドする(下記)
-> - **Settings → Variables and Secrets**: 認証 secret / 環境変数(下記手順4)
+> - **Settings → Functions → KV namespace bindings**: binding 名 `AUTH_KV`(任意・許可リスト用)
+> - **Settings → Variables and Secrets**: Clerk のキー / 許可リスト(下記手順4)
 >
 > 設定ファイルが無いぶん、デプロイコマンドには出力先とプロジェクト名を明示する
 > (`wrangler pages deploy dist/client --project-name inhouse-portal`)。`npm run deploy` /
@@ -130,35 +131,33 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    > 必ず `wrangler pages deploy dist/client --project-name inhouse-portal` に変更すること。
    > 手元から一発で出すなら `npm run deploy` (= `vite build` → `wrangler pages deploy ...`) でもよい。
 
-4. **内製認証 (Google OAuth) を設定**: Google Cloud で OAuth クライアントを作り、
-   Pages に secret / 環境変数を登録する。詳細手順は
-   [docs/auth-internal.md](docs/auth-internal.md) を参照。要点だけ:
-   - Google Cloud → OAuth クライアント ID (ウェブ) を作成し、承認済みリダイレクト
-     URI に `https://<カスタムドメイン>/api/auth/callback` を登録
-   - 必須 secret: `AUTH_SECRET`(ランダム長文字列)/ `GOOGLE_CLIENT_ID` /
-     `GOOGLE_CLIENT_SECRET`
+4. **認証 (Clerk) を設定**: Clerk アプリを作り、Pages に Clerk のキー / 許可リストを
+   登録する。詳細手順は [docs/auth-internal.md](docs/auth-internal.md) を参照。要点だけ:
+   - Clerk Dashboard でアプリを作成し、**Google 連携を有効化**(Phase 2 を使うなら追加スコープ
+     `drive.metadata.readonly` / `script.deployments.readonly` も要求する設定にする)
+   - セッショントークンに `email` クレームを足す(許可リスト照合を毎回のAPI呼び出しなしで
+     行うため。Sessions → Customize session token に `{ "email": "{{user.primary_email_address}}" }`)
+   - 必須: `CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY`
      ```bash
-     openssl rand -base64 48 | npx wrangler pages secret put AUTH_SECRET
-     npx wrangler pages secret put GOOGLE_CLIENT_ID
-     npx wrangler pages secret put GOOGLE_CLIENT_SECRET
+     npx wrangler pages secret put CLERK_SECRET_KEY
+     # CLERK_PUBLISHABLE_KEY は Variables で登録してもよい
      ```
+   - 本番のカスタムドメインで使うには Clerk の **production インスタンス**を作り、指示される
+     CNAME(`clerk.<domain>` 等)を外部DNSに追加する(サブドメインだけ=ネームサーバ移管不要)
    - 許可リスト: `ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS`(`*` ワイルドカード可)を
      環境変数で設定。頻繁に出入りするなら KV `AUTH_KV` の `allowlist` キーに置くと
-     デプロイ不要で編集できる(無料枠で収まる)
+     デプロイ不要で編集できる(無料枠で収まる)。個別メールを使うときだけ `AUTH_SECRET` が要る
    - 例: `ALLOWED_EMAIL_DOMAINS=*@example.co.jp` + 協力者の個別メールを `ALLOWED_EMAILS`
 
-   > ⚠️ `AUTH_SECRET` 未設定のままだと認証ゲートは fail-closed で全体を 503 にする
-   > (設定漏れで丸ごと公開される事故を防ぐため)。デプロイ前に必ず登録すること。
+   > ⚠️ `CLERK_*` 未設定のままだと認証ゲートは fail-closed で全体を 503 にする(設定漏れで
+   > 丸ごと公開される事故を防ぐため)。また許可リストを何も設定しないとサインインできても
+   > 全員 403 になる。デプロイ前に必ず登録すること。
 
-   **プレビュー(PR)デプロイの保護**: プレビューは `*.pages.dev`(Cloudflare 所有
-   ゾーン)上なので **Cloudflare Access を無料で掛けられる**。Zero Trust → Access で
-   `*.<project>.pages.dev` にポリシーを掛けるだけでよい(**追加の環境変数は不要**)。
-   Function 認証をスルーするのは「pages.dev ホスト かつ Preview 環境に
-   `CF_ACCESS_TEAM_DOMAIN`+`CF_ACCESS_AUD` の両方が設定済み かつ Access トークンの
-   **RS256 署名検証が成功**」のときだけ。**本番(Production)にはこの2つを設定しない**ので、
-   本番の pages.dev エイリアスに偽装ヘッダでアクセスされても確実に OAuth ゲートされる
-   (カスタムドメインはそもそも常に OAuth)。詳細は
-   [docs/auth-internal.md](docs/auth-internal.md) の「環境ごとの保護方針」を参照。
+   **プレビュー(PR)デプロイの保護**: 認証は Clerk がアプリ層で一律にゲートするので、
+   プレビュー(`*.pages.dev`)も本番と同じ middleware でゲートされる(Cloudflare Access は
+   不要)。Preview 環境には Clerk の **development インスタンス**のキー(`pk_test`/`sk_test`)を
+   設定する。ハッシュ付きプレビューURLでも dev インスタンスがそのまま通せる。詳細は
+   [docs/auth-internal.md](docs/auth-internal.md) の「環境ごとの構成」を参照。
 
 ### カスタムドメイン (外部サブドメインをCNAMEで割り当てる)
 
@@ -196,31 +195,28 @@ npx wrangler pages secret put PROXY_TARGETS
 
 デプロイ済みGAS Webアプリを手動で `apps.json` に書かずに自動列挙する。**ログイン中の本人が
 アクセスできるGASだけ**(共有ドライブ内のものを含む)を、本人の Google 権限で列挙する
-方式(方式B)。**ログイン時に Drive スコープを一緒に要求**し、得たトークンで Cloudflare が
+方式(方式B)。Google のアクセストークンを **Clerk の Google 連携から取得**し、Cloudflare が
 Drive/Apps Script API を直接叩く。共有レジストリGAS(全員同じ一覧を返す旧方式)は使わない。
 自動取得分には「自動」バッジが付く。
 
-- 有効化(順序に注意。**必ず 1 → 2 の順で**):
-  1. **先に** Google Cloud の OAuth 同意画面にスコープ `drive.metadata.readonly` /
-     `script.deployments.readonly` を追加する。**同意画面を「内部」にすれば審査不要**(同一
-     Workspace 組織メンバー限定)。外部協力者にも配るには「外部」+ Google審査が必要。
-     > ⚠️ この追加より先に手順2(`REGISTRY_KV` バインド)を行うと、同意画面に無いスコープを
-     > 要求することになり **全ユーザーのログインが `invalid_scope` で失敗**する。
-  2. トークン保管用に **`REGISTRY_KV`** をバインドする。**この KV をバインドすること自体が
-     方式Bの opt-in** で、Google OAuth 設定(`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`)が
-     揃うと有効化される(専用フラグは無い)。許可リスト用の `AUTH_KV` とは別バインディングなので、
-     許可リスト目的で KV をバインドしただけでは方式Bは起動しない。以後、各ユーザーはログイン
-     同意で Drive スコープに同意する。
+- 有効化:
+  1. Clerk の Google 連携で、追加スコープ `drive.metadata.readonly` /
+     `script.deployments.readonly` を要求する設定にする(Clerk の Social Connection → Google →
+     Additional scopes)。独自の Google OAuth クライアントを使う場合は、その OAuth 同意画面に
+     同スコープを追加する。**同意画面を「内部」にすれば審査不要**(同一 Workspace 組織メンバー
+     限定)。外部協力者にも配るには「外部」+ Google審査が必要。
+  2. 追加設定は不要。Clerk が設定済みで、ユーザーが Google 連携で上記スコープに同意していれば
+     `/api/registry` が本人権限で列挙する(トークン保管用の専用 KV は不要)。
 - 利用者側: 初回ログインで同意 → `https://script.google.com/home/usersettings` で
   Apps Script API を有効化(未有効なら画面にヒント表示)。
 - 共有ドライブ: スクリプトを共有ドライブに置いていても、Drive API を
   `supportsAllDrives` / `includeItemsFromAllDrives` / `corpora=allDrives` 付きで叩くため、
   本人がメンバーの共有ドライブ内GASも列挙される(`src/server/google-registry.ts`)。検索が
   完全に終わらなかった場合は `incompleteSearch` を検知して警告ログ+画面通知を出す。
-- 安全性: リフレッシュトークンは `AUTH_SECRET` 由来の鍵で **AES-256-GCM 暗号化して KV に保管**
-  (KV単体では復号不可)。ブラウザには出さない。失効(取消)時は自動でトークン削除。
+- 安全性: Google のリフレッシュ管理は **Clerk が担う**(本プロジェクト側でリフレッシュ
+  トークンを保管しない)。アクセストークンはサーバー間でのみ使い、ブラウザには出さない。
 - フォールバック: 本人のトークンが無い/取得失敗時は手動台帳(`apps.json`)のみを返すので、
-  連携前でも画面は動く。
+  連携前でも画面は動く。失効時は画面から再ログインして Google を接続し直すと復旧する。
 - 除外・表示名の上書きは `data/apps.json` の `gasRegistry` で調整:
   ```json
   {
@@ -269,13 +265,13 @@ typecheck → test → フロントビルド → Pages Functions バンドル検
 
 デプロイのたびに「認証が本当にかかっているか」を外形で自動検証する。
 `.github/workflows/post-deploy-smoke.yml` が `scripts/smoke.mjs` で対象URLへ実際にアクセスし、
-未認証アクセスが弾かれること、および **Zero Trust を装った偽装 `Cf-Access-*` ヘッダでも
-素通りしないこと** を確認する。本番とプレビューで認証モデルが違うため2モードで実行する:
+未認証アクセスが弾かれることを確認する。認証は Clerk がアプリ層で一律にゲートするので
+ホストに依らず判定は同じだが、本番/プレビューでインスタンスが違うため2モードで実行する:
 
 - **本番**(production): 固定ドメイン等を厳密なステータスで検証
-  (`/api/apps`→401, `/`→302→login, `/api/proxy/:id`→401)。
-- **プレビュー**(ブランチ/PR デプロイ): 前段の Cloudflare Access でホスト全体が
-  ゲートされるため「未認証で `200` を返さない=公開されていない」ことを検証。
+  (`/api/apps`→401, `/api/me`→401, `/api/proxy/:id`→401, `/`→3xx でブロック)。
+- **プレビュー**(ブランチ/PR デプロイ): dev インスタンスで細部が環境依存なため
+  「未認証で `200` を返さない=公開されていない」ことを検証。
 
 **トリガー**: Cloudflare Pages はデプロイ結果を GitHub の **Check Run**("Cloudflare Pages")
 で通知するので、その `success` 完了を **`check_run`** イベントで受けて発火する

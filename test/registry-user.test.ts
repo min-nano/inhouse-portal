@@ -1,15 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Clerk ラッパーはモックする。/api/registry のユーザーモード(本人権限での GAS 列挙)は、
+// Clerk から得た Google アクセストークンで Drive / Apps Script API を叩く経路をテストする。
+vi.mock("../src/server/auth/clerk", () => ({
+  authenticate: vi.fn(),
+  getGoogleAccessToken: vi.fn(),
+  getClerkClient: vi.fn(() => null),
+  authorizedParties: vi.fn(() => undefined),
+}));
+
 import { createApp, type Env } from "../src/server/app";
 import { loadRegistry } from "../src/server/registry";
-import type { KVNamespace } from "../src/server/auth/allowlist";
-import { createSessionToken, SESSION_COOKIE } from "../src/server/auth/session";
 import {
-  isConnected,
-  loadStoredToken,
-  saveRefreshToken,
-} from "../src/server/auth/token-store";
+  authenticate,
+  getGoogleAccessToken,
+  type ClerkAuth,
+} from "../src/server/auth/clerk";
 
-const SECRET = "test-secret-please-change-0123456789";
+const authMock = authenticate as unknown as ReturnType<typeof vi.fn>;
+const tokenMock = getGoogleAccessToken as unknown as ReturnType<typeof vi.fn>;
 
 const registry = loadRegistry({
   apps: [
@@ -25,52 +34,21 @@ const registry = loadRegistry({
 });
 const app = createApp(registry);
 
-function memoryKV(): KVNamespace {
-  const store = new Map<string, string>();
+const baseEnv: Env = {
+  CLERK_PUBLISHABLE_KEY: "pk_test_x",
+  CLERK_SECRET_KEY: "sk_test_x",
+  ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
+};
+
+function signedIn(email = "u@example.co.jp"): ClerkAuth {
   return {
-    async get(k) {
-      return store.get(k) ?? null;
-    },
-    async put(k, v) {
-      store.set(k, v);
-    },
-    async delete(k) {
-      store.delete(k);
-    },
+    configured: true,
+    status: "signed-in",
+    client: {} as never,
+    userId: "user_1",
+    email,
+    headers: new Headers(),
   };
-}
-
-function baseEnv(kv: KVNamespace, overrides: Partial<Env> = {}): Env {
-  return {
-    AUTH_SECRET: SECRET,
-    GOOGLE_CLIENT_ID: "client-id",
-    GOOGLE_CLIENT_SECRET: "client-secret",
-    ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
-    // 方式B(本人権限GAS列挙)のトークン保管用KV。バインド自体が opt-in。
-    REGISTRY_KV: kv,
-    ...overrides,
-  };
-}
-
-async function sessionCookie(email: string): Promise<string> {
-  const token = await createSessionToken({ email }, SECRET, 24);
-  return `${SESSION_COOKIE}=${token}`;
-}
-
-function b64url(obj: unknown): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(obj));
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function fakeIdToken(payload: Record<string, unknown>): string {
-  return `${b64url({ alg: "RS256" })}.${b64url(payload)}.sig`;
-}
-function readSetCookie(res: Response, name: string): string | undefined {
-  const raw = res.headers.get("set-cookie");
-  if (!raw) return undefined;
-  const m = new RegExp(`${name}=([^;]+)`).exec(raw);
-  return m?.[1];
 }
 
 /** URLで分岐する fetch モック */
@@ -87,145 +65,17 @@ function routeFetch(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  authMock.mockReset();
+  tokenMock.mockReset();
 });
 
-describe("ログイン時スコープ要求 (方式B)", () => {
-  it("方式B有効時(AUTH_KV+Google設定あり)、login は offline + Driveスコープを要求する", async () => {
-    const res = await app.request("/api/auth/login", {}, baseEnv(memoryKV()));
-    expect(res.status).toBe(302);
-    const loc = new URL(res.headers.get("location")!);
-    expect(loc.searchParams.get("access_type")).toBe("offline");
-    expect(loc.searchParams.get("scope")).toContain("drive.metadata.readonly");
-    expect(loc.searchParams.get("scope")).toContain(
-      "script.deployments.readonly",
-    );
-  });
-
-  it("REGISTRY_KV 未設定なら従来どおり identity スコープのみ", async () => {
-    const res = await app.request(
-      "/api/auth/login",
-      {},
-      baseEnv(memoryKV(), { REGISTRY_KV: undefined }),
-    );
-    const loc = new URL(res.headers.get("location")!);
-    expect(loc.searchParams.get("access_type")).toBeNull();
-    expect(loc.searchParams.get("scope")).not.toContain("drive");
-  });
-
-  it("コールバックでリフレッシュトークンを暗号化保管する", async () => {
-    const kv = memoryKV();
-    const env = baseEnv(kv);
-
-    // login で state と oauth cookie を得る
-    const login = await app.request("/api/auth/login", {}, env);
-    const state = new URL(login.headers.get("location")!).searchParams.get(
-      "state",
-    )!;
-    const oauthCookie = readSetCookie(login, "portal_oauth")!;
-
-    // token エンドポイントが refresh_token を返す
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              id_token: fakeIdToken({
-                iss: "https://accounts.google.com",
-                aud: "client-id",
-                email: "taro@example.co.jp",
-                email_verified: true,
-                exp: Math.floor(Date.now() / 1000) + 600,
-              }),
-              access_token: "ya29.at",
-              refresh_token: "1//rt-value",
-              expires_in: 3600,
-              scope:
-                "openid email https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/script.deployments.readonly",
-            }),
-            { status: 200 },
-          ),
-      ),
-    );
-
-    const res = await app.request(
-      `/api/auth/callback?code=abc&state=${state}`,
-      { headers: { cookie: `portal_oauth=${oauthCookie}` } },
-      env,
-    );
-    expect(res.status).toBe(302);
-    expect(readSetCookie(res, SESSION_COOKIE)).toBeTruthy();
-    const stored = await loadStoredToken(kv, SECRET, "taro@example.co.jp");
-    expect(stored?.refreshToken).toBe("1//rt-value");
-  });
-
-  it("granular consent でDriveスコープを外された場合はトークンを保管しない", async () => {
-    const kv = memoryKV();
-    const env = baseEnv(kv);
-    const login = await app.request("/api/auth/login", {}, env);
-    const state = new URL(login.headers.get("location")!).searchParams.get(
-      "state",
-    )!;
-    const oauthCookie = readSetCookie(login, "portal_oauth")!;
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              id_token: fakeIdToken({
-                iss: "https://accounts.google.com",
-                aud: "client-id",
-                email: "taro@example.co.jp",
-                email_verified: true,
-                exp: Math.floor(Date.now() / 1000) + 600,
-              }),
-              access_token: "ya29.at",
-              refresh_token: "1//rt-value",
-              expires_in: 3600,
-              scope: "openid email", // Driveスコープを外された
-            }),
-            { status: 200 },
-          ),
-      ),
-    );
-    const res = await app.request(
-      `/api/auth/callback?code=abc&state=${state}`,
-      { headers: { cookie: `portal_oauth=${oauthCookie}` } },
-      env,
-    );
-    expect(res.status).toBe(302); // ログイン自体は成功
-    expect(await isConnected(kv, SECRET, "taro@example.co.jp")).toBe(false); // 保管はしない
-  });
-
-  it("?reconnect=1 のログインは prompt=consent を付ける", async () => {
-    const res = await app.request(
-      "/api/auth/login?reconnect=1",
-      {},
-      baseEnv(memoryKV()),
-    );
-    const loc = new URL(res.headers.get("location")!);
-    expect(loc.searchParams.get("prompt")).toBe("consent");
-  });
-});
-
-describe("GET /api/registry (ユーザーモード)", () => {
-  let kv: KVNamespace;
-  beforeEach(async () => {
-    kv = memoryKV();
-    await saveRefreshToken(kv, SECRET, "u@example.co.jp", {
-      refreshToken: "1//rt",
-      connectedAt: 1,
-    });
-  });
-
-  it("連携済みなら本人権限のGASをマージして返す", async () => {
+describe("GET /api/registry (ユーザーモード / Clerk 経由の Google トークン)", () => {
+  it("Google 連携済みなら本人権限のGASをマージして返す", async () => {
+    authMock.mockResolvedValue(signedIn());
+    tokenMock.mockResolvedValue("ya29.at");
     vi.stubGlobal(
       "fetch",
       routeFetch((u) => {
-        if (u.includes("oauth2.googleapis.com/token"))
-          return { body: { access_token: "ya29.at", expires_in: 3600 } };
         if (u.includes("/drive/"))
           return {
             body: {
@@ -253,11 +103,7 @@ describe("GET /api/registry (ユーザーモード)", () => {
         return undefined;
       }),
     );
-    const res = await app.request(
-      "/api/registry",
-      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(kv),
-    );
+    const res = await app.request("/api/registry", {}, baseEnv);
     const body = (await res.json()) as {
       apps: { name: string; auto: boolean }[];
       source: { mode: string; auto: number };
@@ -266,77 +112,60 @@ describe("GET /api/registry (ユーザーモード)", () => {
     expect(body.apps.map((a) => a.name)).toContain("自分の日報");
   });
 
-  it("リフレッシュ失効(400)なら自動でトークン削除し手動分を返す", async () => {
+  it("Drive トークン失効(401)なら手動分 + 再連携ヒントを返す", async () => {
+    authMock.mockResolvedValue(signedIn());
+    tokenMock.mockResolvedValue("ya29.stale");
     vi.stubGlobal(
       "fetch",
       routeFetch((u) =>
-        u.includes("oauth2.googleapis.com/token")
-          ? { status: 400, body: { error: "invalid_grant" } }
-          : undefined,
+        u.includes("/drive/") ? { status: 401, body: {} } : undefined,
       ),
     );
-    const res = await app.request(
-      "/api/registry",
-      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(kv),
-    );
+    const res = await app.request("/api/registry", {}, baseEnv);
     const body = (await res.json()) as {
       apps: unknown[];
       source: { userAuthExpired?: boolean };
     };
     expect(body.source.userAuthExpired).toBe(true);
     expect(body.apps).toHaveLength(1); // 手動分のみ
-    expect(await isConnected(kv, SECRET, "u@example.co.jp")).toBe(false);
-  });
-
-  it("一時的なリフレッシュ失敗(invalid_client/401)ではトークンを削除しない", async () => {
-    vi.stubGlobal(
-      "fetch",
-      routeFetch((u) =>
-        u.includes("oauth2.googleapis.com/token")
-          ? { status: 401, body: { error: "invalid_client" } }
-          : undefined,
-      ),
-    );
-    const res = await app.request(
-      "/api/registry",
-      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(kv),
-    );
-    const body = (await res.json()) as {
-      source: { stale?: boolean; userAuthExpired?: boolean };
-    };
-    expect(body.source.stale).toBe(true);
-    expect(body.source.userAuthExpired).toBeUndefined();
-    // 設定ミス由来なので保管トークンは残す(復旧可能にする)
-    expect(await isConnected(kv, SECRET, "u@example.co.jp")).toBe(true);
   });
 
   it("Apps Script API 未有効(全403)なら手動分+ヒントを返す", async () => {
+    authMock.mockResolvedValue(signedIn());
+    tokenMock.mockResolvedValue("ya29.at");
     vi.stubGlobal(
       "fetch",
       routeFetch((u) => {
-        if (u.includes("oauth2.googleapis.com/token"))
-          return { body: { access_token: "ya29.at", expires_in: 3600 } };
         if (u.includes("/drive/"))
           return { body: { files: [{ id: "SID9", name: "x" }] } };
         return { status: 403, body: {} };
       }),
     );
-    const res = await app.request(
-      "/api/registry",
-      { headers: { cookie: await sessionCookie("u@example.co.jp") } },
-      baseEnv(kv),
-    );
+    const res = await app.request("/api/registry", {}, baseEnv);
     const body = (await res.json()) as {
       source: { appsScriptApiDisabled?: boolean };
     };
     expect(body.source.appsScriptApiDisabled).toBe(true);
   });
 
-  it("未ログインは手動へフォールバック(ユーザーモードに入らない)", async () => {
-    const res = await app.request("/api/registry", {}, baseEnv(kv));
+  it("Google 未連携(トークン無し)なら手動へフォールバック", async () => {
+    authMock.mockResolvedValue(signedIn());
+    tokenMock.mockResolvedValue(null);
+    const res = await app.request("/api/registry", {}, baseEnv);
     const body = (await res.json()) as { source: { mode: string } };
-    expect(body.source.mode).not.toBe("user");
+    expect(body.source.mode).toBe("manual");
+  });
+
+  it("未サインインは手動へフォールバック(ユーザーモードに入らない)", async () => {
+    authMock.mockResolvedValue({
+      configured: true,
+      status: "signed-out",
+      signInUrl: "https://accounts.example.dev/sign-in",
+      headers: new Headers(),
+    });
+    const res = await app.request("/api/registry", {}, baseEnv);
+    const body = (await res.json()) as { source: { mode: string } };
+    expect(body.source.mode).toBe("manual");
+    expect(tokenMock).not.toHaveBeenCalled();
   });
 });
