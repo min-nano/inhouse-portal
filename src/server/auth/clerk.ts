@@ -19,6 +19,7 @@
  *   から Backend API(getUserOauthAccessToken)で取得する。リフレッシュは Clerk が担う。
  */
 import { createClerkClient, type ClerkClient } from "@clerk/backend";
+import { createRedirect } from "@clerk/backend/internal";
 
 export type ClerkEnv = {
   /** Clerk の Publishable key(pk_test_… / pk_live_…)。フロント/バックエンド共通の識別子 */
@@ -63,6 +64,28 @@ export function authorizedParties(env: ClerkEnv): string[] | undefined {
   if (!raw) return undefined;
   const parties = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
   return parties.length ? parties : undefined;
+}
+
+/**
+ * Clerk のサインインURL(Account Portal の hosted サインイン画面)を組み立てる。
+ *
+ * `authenticateRequest()` が返す `requestState.signInUrl` は「オプションで渡した
+ * `signInUrl` の値そのまま(未指定なら空文字)」で、Account Portal の URL は自動では
+ * 入らない。一方 Account Portal の URL は **Publishable key から導出できる**
+ * (env 追加は不要)。`@clerk/backend` の `createRedirect` は publishableKey から
+ * frontendApi → Account Portal ドメインを解決し、`redirectToSignIn()` で
+ * `https://accounts.<domain>/sign-in` を返す。`redirect_url` の付与は呼び出し側
+ * (middleware)が行うため、ここでは付けない。
+ */
+export function buildSignInUrl(env: ClerkEnv, request: Request): string {
+  const publishableKey = env.CLERK_PUBLISHABLE_KEY;
+  if (!publishableKey) return "";
+  const { redirectToSignIn } = createRedirect({
+    publishableKey,
+    redirectAdapter: (url: string) => url,
+    baseUrl: new URL(request.url).origin,
+  });
+  return redirectToSignIn();
 }
 
 /** サインイン中ユーザーのメールを解決する(claim 優先、無ければ Backend API)。 */
@@ -153,7 +176,10 @@ export async function authenticate(
   return {
     configured: true,
     status: "signed-out",
-    signInUrl: requestState.signInUrl,
+    // requestState.signInUrl はオプション未指定だと空になり、middleware が
+    // サインイン画面へ 302 できず 401 にフォールバックしてしまう。Publishable key
+    // から Account Portal のサインインURL を導出して常に有効な値を返す。
+    signInUrl: requestState.signInUrl || buildSignInUrl(env, request),
     headers: requestState.headers,
   };
 }
