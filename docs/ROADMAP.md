@@ -6,8 +6,9 @@
 - [x] ポータル画面: カード一覧・検索・カテゴリ絞り込み・ダークモード対応
 - [x] `/api/apps` 台帳API
 - [x] `/api/proxy/:id` GASプロキシ (生URL秘匿・CORS回避。Phase 2の土台)
-- [x] 内製認証 (Google OAuth): `_middleware.ts` 認証ゲート + `/api/auth/*` +
-      許可リスト(ワイルドカード/KV対応)。→ 詳細 `docs/auth-internal.md`
+- [x] 認証 (Clerk): `_middleware.ts` 認証ゲート(`@clerk/backend`)。許可(誰がサインイン
+      できるか)は Clerk 側で管理(Restrictions / Invitations)。全ホストを同一コードで
+      ゲートし、アプリ側の許可リスト(env/KV)は持たない。→ 詳細 `docs/auth-internal.md`
 - [x] テストコード (台帳検証 / APIルート / プロキシ / 認証 / ゲート / 検索ロジック)
 - [x] GitHub Actions CI (typecheck + test + build + Functionsバンドル検証)
 
@@ -18,31 +19,30 @@
 - [ ] 既存のGit連携ビルドの Deploy command を
       `npx wrangler pages deploy dist/client --project-name inhouse-portal` に変更し
       自動デプロイを有効化 (Build command: `npm run build`。`wrangler.jsonc` は置かない)
-- [ ] ダッシュボードで Compatibility date (`2026-06-01`) と KV バインディング
-      (`AUTH_KV`) を設定 (設定ファイルを置かずダッシュボードで運用)
+- [ ] ダッシュボードで Compatibility date (`2026-06-01`) を設定 (設定ファイルを置かず
+      ダッシュボードで運用)。認証用の KV バインディングは不要
 - [ ] カスタムドメインを割り当て: Pages → Custom domains で `portal.example.co.jp`
       を登録し、他社DNSに `CNAME → <project>.pages.dev` を張る
       (ネームサーバをCloudflareに移さず外部サブドメインを使える)
-- [ ] 内製認証を設定 (詳細 `docs/auth-internal.md`):
-      - Google Cloud で OAuth クライアントを作成し、承認済みリダイレクトURIに
-        `https://<カスタムドメイン>/api/auth/callback` を登録
-      - secret を登録: `AUTH_SECRET` / `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
-      - 許可リストを設定 (env の `ALLOWED_EMAIL_DOMAINS`/`ALLOWED_EMAILS`、または
-        KV `AUTH_KV` の `allowlist`)
-        - 事務所メンバー: メールドメイン一致 `*@example.co.jp`
-        - 委託協力者: 個別メールアドレスを許可リストに追加
+- [ ] 認証 (Clerk) を設定 (詳細 `docs/auth-internal.md`):
+      - Clerk アプリを作成し Google 連携を有効化(Phase 2 用に追加スコープも要求)
+      - production インスタンスの CNAME(`clerk.<domain>` 等)を外部DNSに追加
+      - キーを登録: `CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY`
+      - セッショントークンに `email` クレームを追加
+      - 許可(サインイン可能な人)を Clerk で設定 (Restrictions の Allowlist / Invitations)
+        - 事務所メンバー: ドメイン `example.co.jp` を Allowlist に追加
+        - 委託協力者: 個別メールを Allowlist に追加、または Invitations で招待
 - [ ] 実際のGASアプリを `data/apps.json` に登録
 
 ## Phase 2: GASレジストリAPI — デプロイ済みGASの自動取得
 
 詳細設計: `docs/phase2-gas-registry.md`
 
-- [x] 方式B(ユーザーモード)を採用: `REGISTRY_KV` バインド + Google OAuth 設定で有効化
-      (専用フラグは持たず、トークン保管用KVのバインド自体が opt-in)。**ログイン時にDriveスコープを要求**し、
-      本人権限で **その人がアクセスできるGASだけ**を列挙(per-userアクセス制御)。
-      共有ドライブ内GASも対象(Drive APIの `supportsAllDrives`/`includeItemsFromAllDrives`/
-      `corpora=allDrives`)。列挙は `src/server/google-registry.ts`。
-      リフレッシュトークンはAES-256-GCMで暗号化してKV保管、失効時は自動削除。
+- [x] 方式B(ユーザーモード)を採用: Clerk の Google 連携から本人の Google アクセストークンを
+      取得(`getUserOauthAccessToken`)し、本人権限で **その人がアクセスできるGASだけ**を列挙
+      (per-userアクセス制御)。共有ドライブ内GASも対象(Drive APIの `supportsAllDrives`/
+      `includeItemsFromAllDrives`/`corpora=allDrives`)。列挙は `src/server/google-registry.ts`。
+      リフレッシュ管理は Clerk が担い、自前のトークン保管は不要。
       ※センシティブスコープのため実質 Workspace メンバー向け(詳細 `docs/phase2-gas-registry.md`)
 - [x] Functions側: `/api/registry` が方式Bの結果を apps.json とマージして返す
       (`src/server/gas-registry.ts`)。取得失敗時も手動分は返す(ベストエフォート)

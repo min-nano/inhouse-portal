@@ -15,6 +15,7 @@
     "deploy": "npm run build && wrangler pages deploy dist/client --project-name inhouse-portal"
   },
   "dependencies": {
+    "@clerk/backend": "^2.33.5",
     "hono": "^4.6.0",
     "zod": "^3.23.8"
   },

@@ -4,14 +4,13 @@
 > 「本人トークン保管済み → 方式B / それ以外 → 手動台帳のみ」の2段構成。
 >
 > **方式B: ユーザーモード(本人権限・per-userアクセス制御)** ↓「per-userで返す」で後述
-> - **ログイン時にDriveスコープを要求**(`REGISTRY_KV` バインド + Google OAuth 設定で有効化。
->   専用フラグは持たず、トークン保管用KVのバインド自体が opt-in。許可リスト用 `AUTH_KV` とは
->   別バインディング)し、得た本人のOAuthトークンで **その人がアクセスできるGASだけ**を
->   列挙する(`src/server/google-registry.ts`)。
->   共有ドライブ内のGASも対象(`supportsAllDrives` / `includeItemsFromAllDrives` /
->   `corpora=allDrives`)。
-> - リフレッシュトークンは AES-256-GCM で暗号化して KV に保管
->   (`src/server/auth/crypto.ts` / `token-store.ts`)
+> - **Clerk の Google 連携から本人の Google アクセストークンを取得**(`getUserOauthAccessToken`)し、
+>   そのトークンで **その人がアクセスできるGASだけ**を列挙する(`src/server/google-registry.ts`)。
+>   Google 連携で追加スコープ(`drive.metadata.readonly` / `script.deployments.readonly`)を
+>   要求しておく必要がある。共有ドライブ内のGASも対象(`supportsAllDrives` /
+>   `includeItemsFromAllDrives` / `corpora=allDrives`)。
+> - **リフレッシュ管理は Clerk が担う**(本プロジェクト側でリフレッシュトークンを保管しない。
+>   旧方式の `crypto.ts` の AES 暗号化 / `token-store.ts` / `REGISTRY_KV` は撤去した)。
 > - 除外・上書き設定: `data/apps.json` の `gasRegistry`(`src/server/registry.ts`)。
 >   マージは `src/server/gas-registry.ts`、画面表示は `web/main.ts`(「自動」バッジ)。
 >
@@ -116,26 +115,23 @@ function listDeployedWebApps() {
 
 「アクセスしているユーザーとして実行し、その人がアクセスできるGASだけを返す」を
 実現する方式。共有レジストリGAS(方式A)は不要で、**Cloudflare Functions が本人の
-Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
+Google OAuth トークン(Clerk から取得)で Drive API / Apps Script API を直接叩く**。
 
 ### フロー
 
 ```
-ログイン (/api/auth/login)  ※方式B有効時(REGISTRY_KV バインド + Google OAuth 設定)
-   └─ Google 同意画面 (openid/email/profile + Driveスコープ, access_type=offline)
-        └─ /api/auth/callback
-             ├─ 通常のセッション発行(従来どおり)
-             └─ refresh_token を AES-256-GCM で暗号化し KV に保管(初回同意時に取得)
-/api/registry (トークン保管済みユーザー)
-   └─ refresh_token → access_token へ更新
+ログイン (Clerk の Google 連携)
+   └─ Google 同意画面 (email/profile + Drive/Script の追加スコープ)
+        └─ Clerk がアクセス/リフレッシュトークンを管理(本プロジェクト側は保管しない)
+/api/registry (サインイン中ユーザー)
+   └─ Clerk Backend API: getUserOauthAccessToken(userId, "google") で access_token を取得
         └─ Drive: 本人が見えるGASプロジェクトを列挙
              └─ Apps Script API: 各デプロイのWebアプリURLを取得
                   └─ apps.json とマージして返す (per-user 結果, 5分キャッシュ)
 ```
 
-スコープはログイン同意に含めて要求する(opt-inの連携ボタンは設けない)。`access_type=offline`
-だがログイン毎に同意を強制しない(`prompt=select_account`)ため、リフレッシュトークンは
-**初回同意時のみ**返る。以後のログインではセッションのみ更新し、保管済みトークンを使い続ける。
+スコープは Clerk の Google 連携設定で要求しておく。リフレッシュは Clerk が担うため、
+`/api/registry` は毎回 Clerk から**有効なアクセストークン**を取り出すだけでよい。
 
 ### スコープ(最小権限・センシティブ)
 
@@ -144,23 +140,17 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
 
 ### 安全に運用するための設計
 
-- **リフレッシュトークンは平文で保存しない**。`AUTH_SECRET` から HKDF で導出した鍵で
-  AES-256-GCM 暗号化して KV に置く(`crypto.ts` / `token-store.ts`)。**KV 単体が漏れても
-  復号不可**。`AUTH_SECRET` のローテートで全連携が実質失効する。
-- KVキーは email の **HMAC-SHA256(AUTH_SECRET 由来)**。平文PIIを使わず、かつ候補メールの
-  総当たりで連携有無を判定されないようにする(許可リストの `emailHashes` と同方式)。
-- **ログイン時にスコープ要求**: `REGISTRY_KV` バインド + Google OAuth 設定が揃うと方式Bが
-  有効になり(専用フラグは持たず、トークン保管用KVのバインド自体が opt-in。許可リスト用
-  `AUTH_KV` とは別)、ログイン同意でDriveスコープも一緒に要求する(opt-inの連携ボタンは無し)。
-  `REGISTRY_KV` 未バインド時は従来どおり identity のみのログイン。
-- **自動失効処理**: リフレッシュ失敗のうち `error=invalid_grant`(取消・失効)のときだけ
-  保管トークンを削除する。`invalid_client`(secret設定ミス)や 429・5xx は一時障害として
-  トークンを残す(設定を直せば復旧できるように)。
-- **付与スコープの検証**: granular consent で Drive/Script スコープが外された場合は
-  トークンを保管しない(共有/手動へフォールバック。誤った「一時的に失敗」通知を防ぐ)。
-- **失効後の復旧**: 通常ログインは `prompt=select_account` のため refresh token が
-  再発行されない。画面の失効通知から `/api/auth/login?reconnect=1`(= `prompt=consent`)へ
-  誘導し、確実に再発行させる。
+- **リフレッシュトークンは本プロジェクトで保持しない**。Google トークンの保管・更新は
+  Clerk 側に委ね、`/api/registry` は必要な瞬間にアクセストークンを取り出して使うだけ。
+  (旧方式の AES-256-GCM 暗号化 + KV 保管 / `token-store.ts` / `REGISTRY_KV` は撤去した。)
+- アクセストークンはサーバー間でのみ使い、ブラウザには一切出さない。
+- **スコープ要求**: Clerk の Google 連携で追加スコープ(Drive/Script)を要求する。連携済みで
+  同意があれば `/api/registry` が本人権限で列挙する。未連携ユーザーは手動台帳へフォールバック。
+- **失効時の扱い**: Drive/Apps Script API が 401 を返した(トークン失効)場合は手動台帳へ
+  フォールバックし、画面に「再ログインで Google を接続し直す」ヒントを出す。Google 側での
+  ユーザー取消は https://myaccount.google.com/permissions から行える。
+- **失効後の復旧**: 画面の失効通知から**再ログイン**(`/api/auth/logout` → 再サインイン)へ
+  誘導する。Clerk が Google 連携(スコープ)を取り直して復旧する。
 - **サブリクエスト上限対策**: 本人権限の列挙は最近更新の上位 `MAX_PROJECTS` 件に制限し、
   同時実行数を絞って並列化する(Cloudflare 無料プランの50サブリクエスト制限対策)。
 - **自動取得URLのホスト制限**: 自動分の `url` は `script.google.com` /
@@ -178,7 +168,8 @@ Google OAuth トークンで Drive API / Apps Script API を直接叩く**。
   フォールバックする作りにしてある。
 - 各利用者が `https://script.google.com/home/usersettings` で Apps Script API を
   有効化しておく必要がある(未有効なら画面にヒントを表示)。
-- KV バインディング `REGISTRY_KV` が必須(トークン保管先。許可リスト用 `AUTH_KV` とは別)。
+- Clerk の Google 連携で追加スコープ(Drive/Script)を要求する設定が必要。専用の KV
+  バインディングは不要(トークン管理は Clerk が担うため)。
 - OAuth 同意画面が「テスト(Testing)」公開ステータスのままだと**リフレッシュトークンは
   7日で失効**する。継続運用するには公開ステータスを「本番(In production)」にする
-  (内部アプリなら審査不要で本番化できる)。失効時は画面から再連携すれば復旧する。
+  (内部アプリなら審査不要で本番化できる)。失効時は画面から再ログインすれば復旧する。

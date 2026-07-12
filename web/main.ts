@@ -134,11 +134,14 @@ function showRegistryNotice(source: AppsResponse["source"]) {
     );
   } else if (source.userAuthExpired) {
     $status.replaceChildren(
-      document.createTextNode("Google連携の有効期限が切れました。"),
+      document.createTextNode(
+        "Google連携の有効期限が切れました。再ログインしてGoogleを接続し直してください。",
+      ),
     );
     const a = document.createElement("a");
-    a.href = "/api/auth/login?reconnect=1&redirect=/";
-    a.textContent = "再連携する";
+    // ログアウト → 再ログインで Clerk が Google 連携(スコープ)を取り直す。
+    a.href = "/api/auth/logout";
+    a.textContent = "再ログイン";
     $status.append(a);
     $status.hidden = false;
   } else if (source.stale) {
@@ -160,8 +163,8 @@ async function init() {
     // 連携未設定・取得失敗時も手動分は必ず返る。
     const res = await fetch("/api/registry");
     if (res.status === 401) {
-      // セッション切れ: ログインへ誘導
-      location.href = "/api/auth/login";
+      // セッション切れ: 画面を再読み込みすると middleware が Clerk サインインへ誘導する
+      location.reload();
       return;
     }
     if (!res.ok) {
