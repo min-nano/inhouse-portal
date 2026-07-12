@@ -18,35 +18,28 @@ import {
   TokenInvalidError,
   type UserRegistry,
 } from "./google-registry";
-import { type KVNamespace } from "./auth/allowlist";
 import {
   authenticate,
   authorizedParties,
   getClerkClient,
   getGoogleAccessToken,
+  resolveEmail,
 } from "./auth/clerk";
 import { sha256hex } from "./auth/crypto";
 
 export type Env = {
   /** JSON文字列: {"appId": "https://script.google.com/.../exec"} */
   PROXY_TARGETS?: string;
-  /** Clerk のキー。認証はこの2つ(+任意の2つ)で成立する。 */
+  /**
+   * Clerk のキー。認証・許可(誰がサインインできるか)はすべて Clerk で管理する
+   * (Restrictions の Allowlist / Invitations)。アプリ側の許可リストは持たない。
+   */
   CLERK_PUBLISHABLE_KEY?: string;
   CLERK_SECRET_KEY?: string;
   /** (任意)networkless 検証用の JWT 公開鍵(PEM) */
   CLERK_JWT_KEY?: string;
   /** (任意)azp として許可するオリジン(カンマ/空白区切り) */
   CLERK_AUTHORIZED_PARTIES?: string;
-  /**
-   * 個別メール許可リスト(env `ALLOWED_EMAILS` / KV `emailHashes`)用の HMAC 鍵。
-   * ドメイン許可リストのみで運用するなら不要。設定するとメールを平文で KV に置かずに済む。
-   */
-  AUTH_SECRET?: string;
-  /** 許可リスト(env ベースライン)。`*` ワイルドカード可 */
-  ALLOWED_EMAIL_DOMAINS?: string;
-  ALLOWED_EMAILS?: string;
-  /** 許可リスト(運用中に追加・失効する分)を置くKV。 */
-  AUTH_KV?: KVNamespace;
 };
 
 type AppContext = Context<{ Bindings: Env }>;
@@ -150,9 +143,14 @@ export function createApp(registry: Registry) {
   app.get("/api/me", async (c) => {
     const auth = await authenticate(c.env, c.req.raw);
     if (auth.configured && auth.status === "signed-in") {
+      const email = await resolveEmail(
+        auth.client,
+        auth.sessionClaims,
+        auth.userId,
+      );
       return c.json({
         authenticated: true,
-        email: auth.email ?? null,
+        email: email ?? null,
         name: null,
       });
     }

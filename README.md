@@ -73,11 +73,11 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
 
 > ℹ️ **このリポジトリには `wrangler.jsonc` を置かない**。Pages は設定ファイルが
 > あるとそれをソースとみなし、**ダッシュボードのバインディング/環境変数の編集が
-> 無効化される**ため、KV バインディング等をダッシュボードで運用したい本プロジェクトでは
+> 無効化される**ため、環境変数等をダッシュボードで運用したい本プロジェクトでは
 > 意図的に削除している。代わりに以下をすべて **Cloudflare ダッシュボード**で設定する:
 > - **Settings → Functions → Compatibility date**: `2026-06-01`(Functions の実行時互換日)
-> - **Settings → Functions → KV namespace bindings**: binding 名 `AUTH_KV`(任意・許可リスト用)
-> - **Settings → Variables and Secrets**: Clerk のキー / 許可リスト(下記手順4)
+> - **Settings → Variables and Secrets**: Clerk のキー(下記手順4)
+>   (認証は Clerk 側で許可管理するため、認証用の KV バインディングは不要)
 >
 > 設定ファイルが無いぶん、デプロイコマンドには出力先とプロジェクト名を明示する
 > (`wrangler pages deploy dist/client --project-name inhouse-portal`)。`npm run deploy` /
@@ -131,12 +131,16 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
    > 必ず `wrangler pages deploy dist/client --project-name inhouse-portal` に変更すること。
    > 手元から一発で出すなら `npm run deploy` (= `vite build` → `wrangler pages deploy ...`) でもよい。
 
-4. **認証 (Clerk) を設定**: Clerk アプリを作り、Pages に Clerk のキー / 許可リストを
-   登録する。詳細手順は [docs/auth-internal.md](docs/auth-internal.md) を参照。要点だけ:
+4. **認証 (Clerk) を設定**: Clerk アプリを作り、Pages に Clerk のキーを登録する。
+   詳細手順は [docs/auth-internal.md](docs/auth-internal.md) を参照。要点だけ:
    - Clerk Dashboard でアプリを作成し、**Google 連携を有効化**(Phase 2 を使うなら追加スコープ
      `drive.metadata.readonly` / `script.deployments.readonly` も要求する設定にする)
-   - セッショントークンに `email` クレームを足す(許可リスト照合を毎回のAPI呼び出しなしで
-     行うため。Sessions → Customize session token に `{ "email": "{{user.primary_email_address}}" }`)
+   - **許可(誰がサインインできるか)を Clerk で設定**する(アプリ側の許可リストは持たない):
+     - **Restrictions → Allowlist**: 社内ドメイン `example.co.jp` を追加(社内全員を許可)。
+       協力者は個別メールを追加。ダッシュボードでデプロイ不要に編集できる
+     - Allowlist がプランに無い場合は **Invitations(招待制)** で許可メールを招待する
+   - (任意)セッショントークンに `email` クレームを足すと `/api/me` のメール表示が API 呼び出し
+     なしで済む(Sessions → Customize session token に `{ "email": "{{user.primary_email_address}}" }`)
    - 必須: `CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY`
      ```bash
      npx wrangler pages secret put CLERK_SECRET_KEY
@@ -144,14 +148,10 @@ npm run dev:web     # 画面のみHMR開発 (APIは:8787へプロキシ)
      ```
    - 本番のカスタムドメインで使うには Clerk の **production インスタンス**を作り、指示される
      CNAME(`clerk.<domain>` 等)を外部DNSに追加する(サブドメインだけ=ネームサーバ移管不要)
-   - 許可リスト: `ALLOWED_EMAIL_DOMAINS` / `ALLOWED_EMAILS`(`*` ワイルドカード可)を
-     環境変数で設定。頻繁に出入りするなら KV `AUTH_KV` の `allowlist` キーに置くと
-     デプロイ不要で編集できる(無料枠で収まる)。個別メールを使うときだけ `AUTH_SECRET` が要る
-   - 例: `ALLOWED_EMAIL_DOMAINS=*@example.co.jp` + 協力者の個別メールを `ALLOWED_EMAILS`
 
    > ⚠️ `CLERK_*` 未設定のままだと認証ゲートは fail-closed で全体を 503 にする(設定漏れで
-   > 丸ごと公開される事故を防ぐため)。また許可リストを何も設定しないとサインインできても
-   > 全員 403 になる。デプロイ前に必ず登録すること。
+   > 丸ごと公開される事故を防ぐため)。また Clerk の許可設定(Allowlist / Invitations)を
+   > しないと、サインアップできてしまった人が入れる。デプロイ前に必ず設定すること。
 
    **プレビュー(PR)デプロイの保護**: 認証は Clerk がアプリ層で一律にゲートするので、
    プレビュー(`*.pages.dev`)も本番と同じ middleware でゲートされる(Cloudflare Access は

@@ -12,9 +12,9 @@
  * - `status` は "signed-in" / "signed-out" / "handshake" の3値。handshake は
  *   「Clerk 側にはセッションがあるが本ドメインの `__session` Cookie がまだ無い」状態で、
  *   Clerk が返すヘッダ(Set-Cookie + Location)をそのまま返して Cookie を確定させる。
- * - 許可リスト照合に使うメールは、まずセッションJWTの `email` クレームから取り、
- *   無ければ Backend API(getUser)にフォールバックする(claim を設定しておけば毎回の
- *   API 呼び出しを避けられる)。
+ * - 許可(誰がサインインできるか)は Clerk 側で管理する(Restrictions / Invitations)ので、
+ *   認証ゲートはメールを見ない。メールは /api/me の表示用に、まずセッションJWTの `email`
+ *   クレーム、無ければ Backend API(getUser)から解決する(resolveEmail)。
  * - Phase 2(本人権限でのGAS列挙)用の Google アクセストークンは、Clerk の Google 連携
  *   から Backend API(getUserOauthAccessToken)で取得する。リフレッシュは Clerk が担う。
  */
@@ -105,7 +105,8 @@ export type ClerkAuth =
       status: "signed-in";
       client: ClerkClient;
       userId: string;
-      email?: string;
+      /** セッションJWTのクレーム。email はここから解決する(resolveEmail) */
+      sessionClaims: Record<string, unknown> | null;
       headers: Headers;
     }
   | { configured: true; status: "handshake"; headers: Headers }
@@ -119,6 +120,9 @@ export type ClerkAuth =
 /**
  * リクエストの Clerk セッションを検証して正規化した結果を返す。
  * Clerk が未設定(キー欠落)なら `{ configured: false }`。
+ *
+ * メールは**解決しない**(認証ゲートは許可制御を Clerk に委ねるため email 不要)。
+ * 必要な箇所(/api/me 等)で `resolveEmail(client, sessionClaims, userId)` を呼ぶこと。
  */
 export async function authenticate(
   env: ClerkEnv,
@@ -137,17 +141,12 @@ export async function authenticate(
   }
   if (requestState.isSignedIn) {
     const auth = requestState.toAuth();
-    const email = await resolveEmail(
-      client,
-      auth.sessionClaims as unknown as Record<string, unknown>,
-      auth.userId,
-    );
     return {
       configured: true,
       status: "signed-in",
       client,
       userId: auth.userId,
-      email,
+      sessionClaims: auth.sessionClaims as unknown as Record<string, unknown>,
       headers: requestState.headers,
     };
   }

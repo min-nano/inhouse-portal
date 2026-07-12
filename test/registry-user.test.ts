@@ -37,7 +37,6 @@ const app = createApp(registry);
 const baseEnv: Env = {
   CLERK_PUBLISHABLE_KEY: "pk_test_x",
   CLERK_SECRET_KEY: "sk_test_x",
-  ALLOWED_EMAIL_DOMAINS: "*@example.co.jp",
 };
 
 function signedIn(email = "u@example.co.jp"): ClerkAuth {
@@ -46,7 +45,7 @@ function signedIn(email = "u@example.co.jp"): ClerkAuth {
     status: "signed-in",
     client: {} as never,
     userId: "user_1",
-    email,
+    sessionClaims: { email },
     headers: new Headers(),
   };
 }

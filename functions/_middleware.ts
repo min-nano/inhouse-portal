@@ -2,27 +2,25 @@
  * 認証ゲート (Cloudflare Pages middleware) — Clerk 版。
  *
  * functions/_middleware.ts はプロジェクトへの **全リクエスト**(静的アセットの
- * 画面ファイルを含む)に割り込む。ここで Clerk のセッションを検証し、許可リストに
- * 載っている人だけを通す。認証は Clerk に一本化しており(Google OAuth / Cloudflare
- * Access の使い分けは廃止)、本番のカスタムドメインでもプレビューの pages.dev でも
- * **同一のコード経路**でゲートする(環境差はデプロイに渡す Clerk キーだけ)。
+ * 画面ファイルを含む)に割り込む。ここで Clerk のセッションを検証し、サインイン済みの
+ * 人だけを通す。認証は Clerk に一本化しており(Google OAuth / Cloudflare Access の
+ * 使い分けは廃止)、本番のカスタムドメインでもプレビューの pages.dev でも **同一のコード
+ * 経路**でゲートする(環境差はデプロイに渡す Clerk キーだけ)。
+ *
+ * **誰がサインインできるか(許可制御)は Clerk 側で管理する**(Restrictions の Allowlist、
+ * または Invitations)。したがってサインインを通過した時点で許可済みとみなし、アプリ側に
+ * 許可リスト(env/KV)は持たない。オフボーディングは Clerk でユーザーを削除/BAN する。
  *
  * 判定:
  *   - Clerk 未設定(キー欠落)          → 503 (fail-closed。設定漏れで全公開を防ぐ)
  *   - 公開パス(/api/health)           → next()
  *   - handshake(Cookie 確定が必要)    → Clerk の Set-Cookie + Location をそのまま返す
- *   - サインイン済み + 許可リスト合致    → next()(Clerk が付ける Cookie 更新は伝播)
- *   - サインイン済みだが許可リスト外      → 403(画面は説明HTML / API は JSON)
+ *   - サインイン済み                    → next()(Clerk が付ける Cookie 更新は伝播)
  *   - 未サインインの画面遷移(GET html)  → Clerk サインイン画面へ 302
  *   - 未サインインの API                → 401(JSON)
  */
 import type { Env } from "../src/server/app";
 import { authenticate } from "../src/server/auth/clerk";
-import {
-  isAllowed,
-  resolveAllowlist,
-  type Allowlist,
-} from "../src/server/auth/allowlist";
 
 const PUBLIC_PATHS = new Set(["/api/health"]);
 
@@ -31,26 +29,6 @@ type MiddlewareContext = {
   env: Env;
   next: () => Promise<Response>;
 };
-
-// 許可リストは全リクエストで参照するため、isolate 内で短時間キャッシュして
-// KV 読み取り(env + KV の和集合を解決)を毎回走らせない。env は不変・KV は低頻度更新。
-let allowlistCache: { at: number; value: Allowlist } | null = null;
-const ALLOWLIST_TTL_MS = 60_000;
-
-async function getAllowlist(env: Env, secret: string): Promise<Allowlist> {
-  const now = Date.now();
-  if (allowlistCache && now - allowlistCache.at < ALLOWLIST_TTL_MS) {
-    return allowlistCache.value;
-  }
-  const value = await resolveAllowlist(env, secret);
-  allowlistCache = { at: now, value };
-  return value;
-}
-
-/** テスト用: 許可リストキャッシュを消す。 */
-export function resetAllowlistCache(): void {
-  allowlistCache = null;
-}
 
 /** Clerk が付けたセッション Cookie 更新(あれば)を下流レスポンスに伝播する。 */
 function withClerkCookies(res: Response, headers: Headers): Response {
@@ -63,20 +41,6 @@ function withClerkCookies(res: Response, headers: Headers): Response {
     statusText: res.statusText,
     headers: merged,
   });
-}
-
-function forbiddenPage(email: string | undefined): string {
-  const safe = (email ?? "").replace(/[<>&]/g, "");
-  return `<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>アクセス権がありません</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.7}</style>
-</head><body>
-<h1>アクセス権がありません</h1>
-<p>${safe ? `<strong>${safe}</strong> は` : ""}このポータルの許可リストに登録されていません。</p>
-<p>心当たりがない場合は管理者にご連絡ください。別のアカウントで試すには
-<a href="/api/auth/logout">こちらからログアウト</a>してください。</p>
-</body></html>`;
 }
 
 export async function onRequest(
@@ -103,43 +67,24 @@ export async function onRequest(
     return new Response(null, { status: 307, headers: auth.headers });
   }
 
-  const wantsHtml =
-    request.method === "GET" &&
-    (request.headers.get("accept") ?? "").includes("text/html");
-
-  if (auth.status === "signed-out") {
-    if (wantsHtml && auth.signInUrl) {
-      const signIn = new URL(auth.signInUrl);
-      signIn.searchParams.set("redirect_url", url.toString());
-      return Response.redirect(signIn.toString(), 302);
-    }
-    return new Response(
-      JSON.stringify({ error: "認証が必要です" }),
-      {
-        status: 401,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      },
-    );
-  }
-
-  // signed-in: 許可リスト照合(社内ドメイン + 指名した協力者のみ通す)
-  const secret = env.AUTH_SECRET ?? "";
-  const allowlist = await getAllowlist(env, secret);
-  if (auth.email && (await isAllowed(auth.email, allowlist, secret))) {
+  if (auth.status === "signed-in") {
+    // 許可制御は Clerk が担う(サインインできた=許可済み)。
     return withClerkCookies(await next(), auth.headers);
   }
 
-  // 認証は済んでいるが許可リスト外(または email 未解決)
-  if (wantsHtml) {
-    return new Response(forbiddenPage(auth.email), {
-      status: 403,
-      headers: { "content-type": "text/html; charset=utf-8" },
-    });
+  // signed-out
+  const wantsHtml =
+    request.method === "GET" &&
+    (request.headers.get("accept") ?? "").includes("text/html");
+  if (wantsHtml && auth.signInUrl) {
+    const signIn = new URL(auth.signInUrl);
+    signIn.searchParams.set("redirect_url", url.toString());
+    return Response.redirect(signIn.toString(), 302);
   }
   return new Response(
-    JSON.stringify({ error: "アクセス権がありません" }),
+    JSON.stringify({ error: "認証が必要です" }),
     {
-      status: 403,
+      status: 401,
       headers: { "content-type": "application/json; charset=utf-8" },
     },
   );

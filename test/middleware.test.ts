@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Clerk ラッパーはモックし、middleware のゲート判定(handshake / 許可リスト / 302・401・403 /
-// fail-closed)だけを検証する。許可リスト照合は本物(env のドメイン)を使う。
+// Clerk ラッパーはモックし、middleware のゲート判定(handshake / 302・401 / fail-closed /
+// サインイン済みは通す)だけを検証する。許可制御は Clerk 側にあるので、サインインできた=許可済み。
 vi.mock("../src/server/auth/clerk", () => ({
   authenticate: vi.fn(),
 }));
 
 import { authenticate } from "../src/server/auth/clerk";
-import { onRequest, resetAllowlistCache } from "../functions/_middleware";
+import { onRequest } from "../functions/_middleware";
 import type { Env } from "../src/server/app";
 import type { ClerkAuth } from "../src/server/auth/clerk";
 
@@ -23,11 +23,8 @@ function setAuth(result: ClerkAuth) {
   authMock.mockResolvedValue(result);
 }
 
-const ALLOW_ENV: Partial<Env> = { ALLOWED_EMAIL_DOMAINS: "*@example.co.jp" };
-
 beforeEach(() => {
   authMock.mockReset();
-  resetAllowlistCache();
 });
 
 describe("_middleware auth gate (Clerk)", () => {
@@ -44,7 +41,6 @@ describe("_middleware auth gate (Clerk)", () => {
   it("公開パス(/api/health)は認証なしで通す(authenticate も呼ばない)", async () => {
     const { context, next } = makeContext(
       new Request("https://portal.example.com/api/health"),
-      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res).toBe(NEXT);
@@ -59,7 +55,6 @@ describe("_middleware auth gate (Clerk)", () => {
       new Request("https://portal.example.com/", {
         headers: { accept: "text/html" },
       }),
-      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res.status).toBe(307);
@@ -67,42 +62,21 @@ describe("_middleware auth gate (Clerk)", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("サインイン済み + 許可リスト合致なら通す", async () => {
+  it("サインイン済みなら通す(許可制御は Clerk 側)", async () => {
     setAuth({
       configured: true,
       status: "signed-in",
       client: {} as never,
       userId: "u1",
-      email: "taro@example.co.jp",
+      sessionClaims: { email: "taro@example.co.jp" },
       headers: new Headers(),
     });
     const { context, next } = makeContext(
       new Request("https://portal.example.com/"),
-      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res).toBe(NEXT);
     expect(next).toHaveBeenCalledOnce();
-  });
-
-  it("サインイン済みでも許可リスト外は 403", async () => {
-    setAuth({
-      configured: true,
-      status: "signed-in",
-      client: {} as never,
-      userId: "u2",
-      email: "stranger@evil.example",
-      headers: new Headers(),
-    });
-    const { context, next } = makeContext(
-      new Request("https://portal.example.com/", {
-        headers: { accept: "text/html" },
-      }),
-      ALLOW_ENV,
-    );
-    const res = await onRequest(context);
-    expect(res.status).toBe(403);
-    expect(next).not.toHaveBeenCalled();
   });
 
   it("未サインインの画面遷移は Clerk サインインへ 302 (redirect_url付き)", async () => {
@@ -116,7 +90,6 @@ describe("_middleware auth gate (Clerk)", () => {
       new Request("https://portal.example.com/tools?x=1", {
         headers: { accept: "text/html" },
       }),
-      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res.status).toBe(302);
@@ -141,7 +114,6 @@ describe("_middleware auth gate (Clerk)", () => {
       new Request("https://portal.example.com/api/apps", {
         headers: { accept: "application/json" },
       }),
-      ALLOW_ENV,
     );
     const res = await onRequest(context);
     expect(res.status).toBe(401);
