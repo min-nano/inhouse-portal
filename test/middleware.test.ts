@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Clerk ラッパーはモックし、middleware のゲート判定(handshake / 302・401 / fail-closed /
-// サインイン済みは通す)だけを検証する。許可制御は Clerk 側にあるので、サインインできた=許可済み。
+// Clerk ラッパーはモックし、middleware のゲート判定だけを検証する。
+// 新モデル: 画面(静的アセット)は公開、保護は /api/* のみ(未サインイン/handshake は 401)。
+// 許可制御は Clerk 側にあるので、サインインできた=許可済み。
 vi.mock("../src/server/auth/clerk", () => ({
   authenticate: vi.fn(),
 }));
@@ -27,18 +28,20 @@ beforeEach(() => {
   authMock.mockReset();
 });
 
-describe("_middleware auth gate (Clerk)", () => {
-  it("Clerk 未設定は fail-closed (503, next呼ばない)", async () => {
-    setAuth({ configured: false });
+describe("_middleware auth gate (Clerk, API のみゲート)", () => {
+  it("画面(静的アセット)は公開: 認証せず通す", async () => {
     const { context, next } = makeContext(
-      new Request("https://portal.example.com/"),
+      new Request("https://portal.example.com/", {
+        headers: { accept: "text/html" },
+      }),
     );
     const res = await onRequest(context);
-    expect(res.status).toBe(503);
-    expect(next).not.toHaveBeenCalled();
+    expect(res).toBe(NEXT);
+    expect(next).toHaveBeenCalledOnce();
+    expect(authMock).not.toHaveBeenCalled();
   });
 
-  it("公開パス(/api/health)は認証なしで通す(authenticate も呼ばない)", async () => {
+  it("公開 API(/api/health)は認証なしで通す(authenticate も呼ばない)", async () => {
     const { context, next } = makeContext(
       new Request("https://portal.example.com/api/health"),
     );
@@ -48,21 +51,17 @@ describe("_middleware auth gate (Clerk)", () => {
     expect(authMock).not.toHaveBeenCalled();
   });
 
-  it("handshake は Clerk のヘッダをそのまま返す(307)", async () => {
-    const headers = new Headers({ location: "https://clerk.example/handshake" });
-    setAuth({ configured: true, status: "handshake", headers });
+  it("Clerk 未設定は /api/* で fail-closed (503, next呼ばない)", async () => {
+    setAuth({ configured: false });
     const { context, next } = makeContext(
-      new Request("https://portal.example.com/", {
-        headers: { accept: "text/html" },
-      }),
+      new Request("https://portal.example.com/api/apps"),
     );
     const res = await onRequest(context);
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("https://clerk.example/handshake");
+    expect(res.status).toBe(503);
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("サインイン済みなら通す(許可制御は Clerk 側)", async () => {
+  it("サインイン済みの API は通す(許可制御は Clerk 側)", async () => {
     setAuth({
       configured: true,
       status: "signed-in",
@@ -72,42 +71,36 @@ describe("_middleware auth gate (Clerk)", () => {
       headers: new Headers(),
     });
     const { context, next } = makeContext(
-      new Request("https://portal.example.com/"),
+      new Request("https://portal.example.com/api/registry"),
     );
     const res = await onRequest(context);
     expect(res).toBe(NEXT);
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it("未サインインの画面遷移は Clerk サインインへ 302 (redirect_url付き)", async () => {
+  it("サインイン済みは Clerk の Cookie 更新を伝播する", async () => {
+    const headers = new Headers();
+    headers.append("set-cookie", "__session=refreshed; Path=/");
     setAuth({
       configured: true,
-      status: "signed-out",
-      signInUrl: "https://accounts.example.dev/sign-in",
-      headers: new Headers(),
+      status: "signed-in",
+      client: {} as never,
+      userId: "u1",
+      sessionClaims: {},
+      headers,
     });
-    const { context, next } = makeContext(
-      new Request("https://portal.example.com/tools?x=1", {
-        headers: { accept: "text/html" },
-      }),
+    const { context } = makeContext(
+      new Request("https://portal.example.com/api/registry"),
     );
     const res = await onRequest(context);
-    expect(res.status).toBe(302);
-    const loc = new URL(res.headers.get("location")!);
-    expect(loc.origin + loc.pathname).toBe(
-      "https://accounts.example.dev/sign-in",
-    );
-    expect(loc.searchParams.get("redirect_url")).toBe(
-      "https://portal.example.com/tools?x=1",
-    );
-    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toContain("__session=refreshed");
   });
 
-  it("未サインインの API リクエストは 401(JSON)", async () => {
+  it("未サインインの API は 401(JSON、リダイレクトしない)", async () => {
     setAuth({
       configured: true,
       status: "signed-out",
-      signInUrl: "https://accounts.example.dev/sign-in",
       headers: new Headers(),
     });
     const { context, next } = makeContext(
@@ -118,6 +111,17 @@ describe("_middleware auth gate (Clerk)", () => {
     const res = await onRequest(context);
     expect(res.status).toBe(401);
     expect(res.headers.get("content-type")).toContain("application/json");
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("handshake の API も 401(fetch を壊さないため 3xx にしない)", async () => {
+    const headers = new Headers({ location: "https://clerk.example/handshake" });
+    setAuth({ configured: true, status: "handshake", headers });
+    const { context, next } = makeContext(
+      new Request("https://portal.example.com/api/registry"),
+    );
+    const res = await onRequest(context);
+    expect(res.status).toBe(401);
     expect(next).not.toHaveBeenCalled();
   });
 });

@@ -6,26 +6,27 @@
  * 含めず、GitHub Actions から呼ぶ:
  *   node scripts/smoke.mjs [--preview] <url> [url2 ...]
  *
- * 認証は Clerk に一本化しており、カスタムドメインでも pages.dev でも **同一の middleware が
- * アプリ層でゲートする**(以前のような Cloudflare Access(Zero Trust)前段や、ホスト種別ごとの
- * 認証モデルの違いは無い)。したがって未認証リクエストのステータスはホストに依らず一定になる。
+ * 認証は Clerk に一本化しており、保護の境界は **/api/*(データ・操作)** にある。画面(静的
+ * シェル)は公開配信し、クライアントの ClerkJS が UI をゲートする。したがって検証は
+ * 「**データ API が未認証で漏れていないか(401)**」を軸にする。`/`(シェル)は公開なので
+ * 200 が正しく、生存確認として使う。
  *
  * ● production(本番): 厳密なステータスを検証する。
  *     - /api/health            → 200(公開パス。生存確認)
- *     - /api/apps  (未認証)    → 401(台帳データ保護)
- *     - /api/me    (未認証)    → 401
+ *     - /            (未認証)  → 200(公開シェル。ClerkJS がクライアントでゲート)
+ *     - /api/apps     (未認証)  → 401(台帳データ保護)
+ *     - /api/registry (未認証)  → 401(画面が実際に使うデータ API)
+ *     - /api/me       (未認証)  → 401
  *     - /api/proxy/:id (未認証) → 401
- *     - /            (未認証)  → 3xx でブロック(Clerk サインインへリダイレクト。200 で
- *                                画面が漏れないこと)
  *
  * ● preview(--preview): プレビューは Clerk の development インスタンスでゲートされる。
- *   リダイレクト先など細部は環境依存なので、「**未認証で 200 を返さない(=ブロック)**」
- *   ことだけを検証する。
- *     - /api/apps  (未認証) → 200 を返さない(3xx/401/403)
- *     - /            (未認証) → 200 を返さない(画面が漏れない)
+ *   細部は環境依存なので、データ API が「**未認証で 200 を返さない(=ブロック)**」ことだけを
+ *   検証する(シェル `/` は公開なのでチェックしない)。
+ *     - /api/apps     (未認証) → 200 を返さない(3xx/401/403)
+ *     - /api/registry (未認証) → 200 を返さない
  *
  * 判定の意味:
- *   - 200 が返る = 認証が丸ごと外れている(最重要の事故)
+ *   - データ API に 200 が返る = 認証が丸ごと外れている(最重要の事故)
  *   - 503 が返る = Clerk キー等の設定漏れ(fail-closed で閉じてはいるが壊れている)
  *   - 期待どおり 401/3xx = OK
  *
@@ -79,7 +80,16 @@ function expectBlocked(origin, name, path, opts) {
 function productionCases(origin) {
   return [
     expectStatus(origin, "health: /api/health は 200", "/api/health", 200),
+    expectStatus(origin, "page: / は 200(公開シェル)", "/", 200, {
+      accept: "text/html",
+    }),
     expectStatus(origin, "apps: /api/apps 未認証は 401", "/api/apps", 401),
+    expectStatus(
+      origin,
+      "registry: /api/registry 未認証は 401",
+      "/api/registry",
+      401,
+    ),
     expectStatus(origin, "me: /api/me 未認証は 401", "/api/me", 401),
     expectStatus(
       origin,
@@ -87,18 +97,17 @@ function productionCases(origin) {
       "/api/proxy/__smoke_nonexistent",
       401,
     ),
-    expectBlocked(origin, "page: / 未認証はブロック(画面が漏れない)", "/", {
-      accept: "text/html",
-    }),
   ];
 }
 
 function previewCases(origin) {
   return [
     expectBlocked(origin, "apps: /api/apps 未認証はブロック", "/api/apps"),
-    expectBlocked(origin, "page: / 未認証はブロック(画面が漏れない)", "/", {
-      accept: "text/html",
-    }),
+    expectBlocked(
+      origin,
+      "registry: /api/registry 未認証はブロック",
+      "/api/registry",
+    ),
   ];
 }
 

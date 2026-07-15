@@ -1,4 +1,5 @@
 import { ALL_CATEGORY, filterApps, type AppEntry } from "./filter";
+import { requireSignIn, signOut } from "./auth";
 
 type AppsResponse = {
   apps: AppEntry[];
@@ -139,9 +140,13 @@ function showRegistryNotice(source: AppsResponse["source"]) {
       ),
     );
     const a = document.createElement("a");
-    // ログアウト → 再ログインで Clerk が Google 連携(スコープ)を取り直す。
-    a.href = "/api/auth/logout";
+    // サインアウト → 再ログインで Clerk が Google 連携(スコープ)を取り直す。
+    a.href = "#";
     a.textContent = "再ログイン";
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      void signOut();
+    });
     $status.append(a);
     $status.hidden = false;
   } else if (source.stale) {
@@ -163,7 +168,7 @@ async function init() {
     // 連携未設定・取得失敗時も手動分は必ず返る。
     const res = await fetch("/api/registry");
     if (res.status === 401) {
-      // セッション切れ: 画面を再読み込みすると middleware が Clerk サインインへ誘導する
+      // セッション切れ: 再読み込みで requireSignIn が走り、必要なら Clerk サインインへ誘導する
       location.reload();
       return;
     }
@@ -188,4 +193,21 @@ $search.addEventListener("input", () => {
   renderApps();
 });
 
-init();
+// ヘッダのログアウトは Clerk のセッションを破棄する(サーバーのCookieクリアだけでは
+// クライアントの ClerkJS が保持するセッションが残るため)。
+document.querySelector(".logout")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  void signOut();
+});
+
+// 画面は公開配信されるので、まず ClerkJS でサインインをゲートしてから描画する。
+// 未サインインなら requireSignIn がサインイン画面へリダイレクトして先へ進まない。
+requireSignIn()
+  .then(() => init())
+  .catch((err) => {
+    showStatus(
+      `サインインを初期化できませんでした (${
+        err instanceof Error ? err.message : String(err)
+      })。`,
+    );
+  });
