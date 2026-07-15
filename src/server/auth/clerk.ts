@@ -110,12 +110,7 @@ export type ClerkAuth =
       headers: Headers;
     }
   | { configured: true; status: "handshake"; headers: Headers }
-  | {
-      configured: true;
-      status: "signed-out";
-      signInUrl: string;
-      headers: Headers;
-    };
+  | { configured: true; status: "signed-out"; headers: Headers };
 
 /**
  * リクエストの Clerk セッションを検証して正規化した結果を返す。
@@ -153,7 +148,6 @@ export async function authenticate(
   return {
     configured: true,
     status: "signed-out",
-    signInUrl: requestState.signInUrl,
     headers: requestState.headers,
   };
 }
