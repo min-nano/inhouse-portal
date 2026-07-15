@@ -108,15 +108,19 @@ npx wrangler pages secret put CLERK_SECRET_KEY
 
 | 変数 | 必須 | 種別 | 説明 |
 |---|---|---|---|
-| `CLERK_PUBLISHABLE_KEY` | ✅ | 変数/secret | Clerk の Publishable key(`pk_test_…`/`pk_live_…`)。サーバー(`/api/*` 検証)用 |
-| `VITE_CLERK_PUBLISHABLE_KEY` | ✅ | **ビルド変数** | 同じ Publishable key。**`vite build` 時**にクライアントへ焼き込む(ClerkJS 用)。`pk_…` は公開値なので埋め込んで問題ない。Cloudflare Pages のビルド環境変数に設定する |
+| `CLERK_PUBLISHABLE_KEY` | ✅ | 変数/secret | Clerk の Publishable key(`pk_test_…`/`pk_live_…`)。**サーバー(`/api/*` 検証)とクライアント(ClerkJS)で共用**。1つ登録すれば足りる(下記) |
 | `CLERK_SECRET_KEY` | ✅ | secret | Clerk の Secret key(`sk_test_…`/`sk_live_…`) |
 | `CLERK_JWT_KEY` | 任意 | 変数/secret | JWT 検証用の公開鍵(PEM)。設定すると JWKS 取得なしの networkless 検証になる(Clerk Dashboard の JWKS/PEM から取得) |
 | `CLERK_AUTHORIZED_PARTIES` | 推奨 | 変数 | `azp` として許可するオリジン(カンマ区切り)。例 `https://portal.example.co.jp`。別オリジンからのトークン持ち込みを弾く |
 
-> ⚠️ `VITE_` 接頭辞の変数は **ビルド時にクライアントJSへ焼き込まれる**。ランタイムの
-> `context.env`(サーバー用 `CLERK_PUBLISHABLE_KEY`)とは別枠なので、**両方**設定すること。
-> 秘匿値(`CLERK_SECRET_KEY` 等)は絶対に `VITE_` を付けないこと(クライアントに漏れる)。
+> **Publishable key は1つの変数 `CLERK_PUBLISHABLE_KEY` で足りる**。サーバーはランタイムの
+> `context.env` から読み、クライアント(ClerkJS)へは `vite build` 時に **`define`** で同じ変数
+> (`process.env.CLERK_PUBLISHABLE_KEY`)を焼き込む(`vite.config.ts`)。Cloudflare Pages の
+> ビルド環境変数はビルド時に `process.env` に生えるため、**同名で二重登録する必要はない**。
+>
+> ⚠️ クライアントへ焼き込むのは **Publishable key(公開値)だけ**。`CLERK_SECRET_KEY` 等の秘匿値は
+> 絶対にクライアントへ出さない(vite の `envPrefix` に `CLERK_` を足すと secret も漏れるため、
+> その方法は使わず `define` で当該キーのみ注入している)。
 
 > **「変数」も「secret」も、コードからの読み方は同じ**。Pages Functions では plaintext 変数も
 > secret もランタイムでは等しく `context.env` に生える。上表で「変数」の項目も secret として
@@ -176,12 +180,12 @@ CLERK_PUBLISHABLE_KEY=pk_test_xxxx
 CLERK_SECRET_KEY=sk_test_xxxx
 ```
 
-- クライアント(ClerkJS)用に **ビルド時**の `VITE_CLERK_PUBLISHABLE_KEY` も必要。`npm run dev` は
-  `vite build` を含むので、ビルド前に環境変数として渡す(シェルで `export`、または vite が読む
-  gitignore 済みの `web/.env.local` に置く):
+- クライアント(ClerkJS)用の Publishable key は **同じ `CLERK_PUBLISHABLE_KEY`** をビルド時に読む。
+  `npm run dev` は `vite build` を含むので、ビルド前にシェルで `export` しておく(`.dev.vars` は
+  wrangler ランタイム用で vite ビルドは読まないため):
 
   ```
-  VITE_CLERK_PUBLISHABLE_KEY=pk_test_xxxx   # CLERK_PUBLISHABLE_KEY と同じ値
+  export CLERK_PUBLISHABLE_KEY=pk_test_xxxx   # .dev.vars と同じ値
   ```
 
 - development インスタンスは `localhost` を許可オリジンとして扱えるため、ローカルで実際の Clerk

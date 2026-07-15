@@ -1,10 +1,8 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  /** Clerk の Publishable key(pk_…)。ビルド時に注入する公開値。 */
-  readonly VITE_CLERK_PUBLISHABLE_KEY?: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
+/**
+ * ビルド時に vite の `define` で注入される Clerk の Publishable key(`pk_…`、公開値)。
+ * サーバーと同じ環境変数 `CLERK_PUBLISHABLE_KEY` を元に焼き込む(vite.config.ts 参照)。
+ * 未設定ならビルド時に空文字になる。
+ */
+declare const __CLERK_PUBLISHABLE_KEY__: string;

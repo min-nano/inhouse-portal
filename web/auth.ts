@@ -11,8 +11,10 @@
  */
 import { Clerk } from "@clerk/clerk-js";
 
-// Publishable key はビルド時に注入する公開値(pk_…)。クライアントに埋め込んで問題ない。
-const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+// Publishable key はビルド時に vite の define で注入する公開値(pk_…)。サーバーと同じ
+// 環境変数 `CLERK_PUBLISHABLE_KEY` を元に __CLERK_PUBLISHABLE_KEY__ へ焼き込まれる
+// (vite.config.ts 参照)。クライアントに埋め込んで問題ない。
+const publishableKey = __CLERK_PUBLISHABLE_KEY__;
 
 let clerkInstance: Clerk | null = null;
 
