@@ -1,0 +1,44 @@
+name: Claude Code Review
+
+# PR の作成・更新ごとに Claude Code を Anthropic API 経由で呼び出し、
+# 自動でコードレビューを行う。
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+# レビューコメントの投稿に pull-requests / issues: write が必要。
+# id-token: write は claude-code-action の OIDC トークン連携に使う。
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # マージコミットではなく PR head をレビュー対象にする。
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            この Pull Request の差分をコードレビューしてください。日本語で回答してください。
+
+            観点:
+            - 正しさ・ロジックのバグ・エッジケースの見落とし
+            - セキュリティ (認証/認可の抜け、入力バリデーション、機密情報の漏洩)。
+              本プロジェクトは Clerk による認証と zod バリデーションを使用しています。
+            - Cloudflare Pages Functions (functions/ 配下) の実行環境での注意点
+            - パフォーマンス上の懸念や不要な再計算
+            - テストの不足 (vitest)
+
+            重大度を 🔴(要修正) / 🟡(改善提案) で示し、該当行への
+            インラインコメントで具体的かつ実行可能なフィードバックを行ってください。
+            スタイルのみの指摘や既存コードの流儀に沿った軽微な点は控えめに。
+          claude_args: "--max-turns 8 --model claude-sonnet-5"
