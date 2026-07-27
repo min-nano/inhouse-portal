@@ -1,28 +1,28 @@
 /**
  * 認証ゲート (Cloudflare Pages middleware) — Clerk 版。
  *
- * functions/_middleware.ts はプロジェクトへの **全リクエスト**(静的アセットの
- * 画面ファイルを含む)に割り込む。ここで Clerk のセッションを検証し、サインイン済みの
- * 人だけを通す。認証は Clerk に一本化しており(Google OAuth / Cloudflare Access の
- * 使い分けは廃止)、本番のカスタムドメインでもプレビューの pages.dev でも **同一のコード
- * 経路**でゲートする(環境差はデプロイに渡す Clerk キーだけ)。
+ * ゲートの境界は /api/*(データ・操作)に置く。画面(静的 HTML/JS/CSS)は
+ * 公開し、クライアントの ClerkJS が UI をゲートする(未サインインなら Clerk の
+ * サインイン画面へリダイレクト)。静的シェルには機密が無く、実データ・操作はすべて
+ * /api/* の内側にあるため、この境界で保護は成立する。
  *
- * **誰がサインインできるか(許可制御)は Clerk 側で管理する**(Restrictions の Allowlist、
- * または Invitations)。したがってサインインを通過した時点で許可済みとみなし、アプリ側に
- * 許可リスト(env/KV)は持たない。オフボーディングは Clerk でユーザーを削除/BAN する。
+ * こうすることで未サインインでもシェル + ClerkJS が読み込まれ、ClerkJS が dev ブラウザ
+ * 機構を含む Clerk のフローを正しく処理できる(production の同一レジスタブルドメインでも、
+ * preview の `*.pages.dev`(development インスタンス)でも、サインイン後の戻りが成立する)。
  *
- * 判定:
- *   - Clerk 未設定(キー欠落)          → 503 (fail-closed。設定漏れで全公開を防ぐ)
- *   - 公開パス(/api/health)           → next()
- *   - handshake(Cookie 確定が必要)    → Clerk の Set-Cookie + Location をそのまま返す
- *   - サインイン済み                    → next()(Clerk が付ける Cookie 更新は伝播)
- *   - 未サインインの画面遷移(GET html)  → Clerk サインイン画面へ 302
- *   - 未サインインの API                → 401(JSON)
+ * 判定(/api/* のみ):
+ *   - Clerk 未設定(キー欠落)           → 503(fail-closed。設定漏れで API 全公開を防ぐ)
+ *   - 公開 API(/api/health)            → next()
+ *   - サインイン済み                     → next()(Clerk が付ける Cookie 更新は伝播)
+ *   - 未サインイン / handshake           → 401(JSON)。
+ *       ※ API に 3xx を返すと fetch が壊れるためリダイレクトはしない。サインイン誘導と
+ *          セッション確立はクライアントの ClerkJS が担う。
  */
 import type { Env } from "../src/server/app";
 import { authenticate } from "../src/server/auth/clerk";
 
-const PUBLIC_PATHS = new Set(["/api/health"]);
+/** 認証不要の API パス。 */
+const PUBLIC_API_PATHS = new Set(["/api/health"]);
 
 type MiddlewareContext = {
   request: Request;
@@ -49,22 +49,21 @@ export async function onRequest(
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  if (PUBLIC_PATHS.has(url.pathname)) return next();
+  // 画面などの静的アセットは公開(ClerkJS がクライアントでゲートする)。保護対象は
+  // データ/操作を扱う /api/* のみ。/api/health は生存確認用の公開パス。
+  const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
+  if (!isApi || PUBLIC_API_PATHS.has(url.pathname)) {
+    return next();
+  }
 
   const auth = await authenticate(env, request);
 
   if (!auth.configured) {
-    // Clerk 未設定で素通しすると全公開になるため fail-closed。
+    // Clerk 未設定で素通しすると API が全公開になるため fail-closed。
     return new Response(
       "認証が未設定です。CLERK_PUBLISHABLE_KEY / CLERK_SECRET_KEY を設定してください。",
       { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } },
     );
-  }
-
-  // Clerk 側にセッションがあるが本ドメインの Cookie 未確定。Clerk の指示どおり
-  // Set-Cookie + Location を返して Cookie を確定させる(ClerkJS 無しでも成立する)。
-  if (auth.status === "handshake") {
-    return new Response(null, { status: 307, headers: auth.headers });
   }
 
   if (auth.status === "signed-in") {
@@ -72,15 +71,9 @@ export async function onRequest(
     return withClerkCookies(await next(), auth.headers);
   }
 
-  // signed-out
-  const wantsHtml =
-    request.method === "GET" &&
-    (request.headers.get("accept") ?? "").includes("text/html");
-  if (wantsHtml && auth.signInUrl) {
-    const signIn = new URL(auth.signInUrl);
-    signIn.searchParams.set("redirect_url", url.toString());
-    return Response.redirect(signIn.toString(), 302);
-  }
+  // 未サインイン / handshake(本ドメインの Cookie 未確定)。API には JSON 401 を返す。
+  // リダイレクト(302/307)は fetch を壊すため使わない。サインイン誘導と Cookie 確定は
+  // クライアントの ClerkJS が担い、確立後に API を再試行する。
   return new Response(
     JSON.stringify({ error: "認証が必要です" }),
     {
